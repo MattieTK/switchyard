@@ -62,23 +62,32 @@ export function createJobService(d: {
     async start(input) {
       const draft = drafts.get(input.projectId);
       if (!draft) throw new UserInputError("Build the plan for this project first.", 409);
-      if (draft.plan.blockers.length) throw new UserInputError(draft.plan.blockers.join(" "));
-      if (!WORKER_NAME.test(input.workerName)) {
-        throw new UserInputError("Worker names use lowercase letters, digits and hyphens, up to 63 characters.");
-      }
-      const env = skipEntries(draft.plan.env, input.skip);
-      // Only accept typed values for entries Vercel didn't supply.
-      const typed = Object.fromEntries(
-        env.entries.filter((e) => e.needsInput && input.values[e.id]).map((e) => [e.id, input.values[e.id] as string]),
-      );
-      const values = { ...draft.values, ...typed };
-      const missing = missingInputs(env, values);
-      if (missing.length) {
-        throw new UserInputError(`Enter a value, or choose Skip, for: ${missing.map((e) => e.key).join(", ")}.`);
-      }
-      const plan: MigrationPlan = { ...draft.plan, env, workerName: input.workerName, nextCache: input.nextCache };
-      const job = await d.store.create(plan, draft.accountId, values);
+      // Claim the draft before the first await, so an overlapping approval finds nothing to create from.
       drafts.delete(input.projectId);
+      let job: Job;
+      try {
+        if (draft.plan.blockers.length) throw new UserInputError(draft.plan.blockers.join(" "));
+        if (!WORKER_NAME.test(input.workerName)) {
+          throw new UserInputError("Worker names use lowercase letters, digits and hyphens, up to 63 characters.");
+        }
+        const env = skipEntries(draft.plan.env, input.skip);
+        // Only accept typed values for entries Vercel didn't supply.
+        const typed = Object.fromEntries(
+          env.entries.filter((e) => e.needsInput && input.values[e.id]).map((e) => [e.id, input.values[e.id] as string]),
+        );
+        const values = { ...draft.values, ...typed };
+        const missing = missingInputs(env, values);
+        if (missing.length) {
+          throw new UserInputError(`Enter a value, or choose Skip, for: ${missing.map((e) => e.key).join(", ")}.`);
+        }
+        const plan: MigrationPlan = { ...draft.plan, env, workerName: input.workerName, nextCache: input.nextCache };
+        job = await d.store.create(plan, draft.accountId, values);
+      } catch (e) {
+        // Put the plan back so the user can correct the input and approve again. A newer plan
+        // built while this start was pending takes precedence.
+        if (!drafts.has(input.projectId)) drafts.set(input.projectId, draft);
+        throw e;
+      }
       d.queue.enqueue(job.id);
       return job;
     },

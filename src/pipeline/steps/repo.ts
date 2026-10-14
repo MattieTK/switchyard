@@ -6,10 +6,11 @@ import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
-import { runOrThrow } from "../../exec.ts";
+import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
-import { execCommand } from "../../translate/package-manager.ts";
-import type { Step } from "../types.ts";
+import { addCommand, execCommand, type PackageManager } from "../../translate/package-manager.ts";
+import type { Step, StepContext } from "../types.ts";
+import { findUndeclaredImports, previousVersion } from "../undeclared-deps.ts";
 import { git, productionBuildEnv, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
 
 export const cloneStep: Step = {
@@ -113,12 +114,77 @@ export const convertStep: Step = {
   },
 };
 
+// How many times a build can be repaired by adding undeclared packages before it fails for good.
+const MAX_DEPENDENCY_REPAIRS = 3;
+
+const LOCKFILES: Record<PackageManager, readonly string[]> = {
+  npm: ["package-lock.json", "npm-shrinkwrap.json"],
+  pnpm: ["pnpm-lock.yaml"],
+  yarn: ["yarn.lock"],
+  bun: ["bun.lock"],
+};
+
+// The package's version in the production branch's lockfile, from before Switchyard changed anything.
+async function versionBeforeMigration(ctx: StepContext, name: string): Promise<string | null> {
+  const repo = requireRepo(ctx.job.plan);
+  const repoDir = requireOutput(ctx, "clone", "dir");
+  const folders = [...new Set([repo.rootDirectory, ""])];
+  for (const folder of folders) {
+    for (const file of LOCKFILES[ctx.job.plan.packageManager]) {
+      const path = folder ? `${folder}/${file}` : file;
+      const shown = await ctx.deps.run("git", ["show", `origin/${repo.productionBranch}:${path}`], { cwd: repoDir });
+      if (shown.code === 0) return previousVersion(file, shown.stdout, name);
+    }
+  }
+  return null;
+}
+
+// Adds packages that installed dependencies import without declaring them. Returns a
+// warning for each, or nothing when the failure has another cause.
+async function repairUndeclaredImports(ctx: StepContext, dir: string, output: string): Promise<string[]> {
+  const missing = findUndeclaredImports(output).filter(
+    // An installed package means the import failed for another reason, such as a missing export.
+    (m) => !existsSync(join(dir, "node_modules", m.packageName, "package.json")),
+  );
+  if (!missing.length) return [];
+  const additions = await Promise.all(
+    missing.map(async (m) => ({ ...m, version: await versionBeforeMigration(ctx, m.packageName) })),
+  );
+  const pm = ctx.job.plan.packageManager;
+  const add = addCommand(
+    pm,
+    additions.map((a) => (a.version ? `${a.packageName}@^${a.version}` : a.packageName)),
+  );
+  await runOrThrow(ctx.deps.run, add.cmd, add.args, {
+    cwd: dir,
+    onLine: ctx.log,
+    ...(pm === "npm" ? { env: { npm_config_legacy_peer_deps: "true" } } : {}),
+  });
+  return additions.map(
+    (a) =>
+      `${a.importer} imports ${a.packageName} without listing it as a dependency, so the build couldn't find it. ` +
+      (a.version
+        ? `Switchyard added ${a.packageName}@^${a.version}, the version the project had installed before, to package.json.`
+        : `Switchyard added the latest ${a.packageName} to package.json, since the project hadn't installed it before. Check it's the version ${a.importer} expects.`),
+  );
+}
+
 export const buildStep: Step = {
   id: "build",
   title: "Build locally with cf",
   async run(ctx) {
     const dir = requireOutput(ctx, "convert", "projectDir");
     const { cmd, args } = execCommand(ctx.job.plan.packageManager, "cf", ["build"]);
-    await runOrThrow(ctx.deps.run, cmd, args, { cwd: dir, onLine: ctx.log, env: { ...productionBuildEnv(ctx), CI: "1" } });
+    const options = { cwd: dir, onLine: ctx.log, env: { ...productionBuildEnv(ctx), CI: "1" } };
+    const warnings: string[] = [];
+    for (let repairs = 0; ; repairs++) {
+      const result = await ctx.deps.run(cmd, args, options);
+      if (result.code === 0) break;
+      const added = repairs < MAX_DEPENDENCY_REPAIRS ? await repairUndeclaredImports(ctx, dir, result.output) : [];
+      if (!added.length) throw new CommandError(cmd, args, result);
+      for (const w of added) ctx.log(`Warning: ${w}`);
+      warnings.push(...added);
+    }
+    if (warnings.length) ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };

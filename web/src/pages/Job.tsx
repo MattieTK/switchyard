@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
+import { Collapsible } from "@base-ui/react/collapsible";
+import { Progress } from "@base-ui/react/progress";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
+import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner } from "../ui/controls.tsx";
+import { ChevronIcon, CopyIcon, ExternalIcon } from "../ui/icons.tsx";
+import { StepChain } from "../ui/StepChain.tsx";
 
 const MAX_LINES = 2000;
 
@@ -15,25 +20,107 @@ const STEP_TITLES: Record<StepId, string> = {
   "start-build": "Run the first Cloudflare build",
 };
 
-const STATUS_LABELS: Record<StepState["status"], string> = {
-  pending: "Waiting",
-  running: "Running",
-  done: "Done",
-  failed: "Failed",
-  paused: "Needs you",
-};
-
 const LINK_OUTPUTS: Record<string, string> = {
   prUrl: "Pull request",
   workersDevUrl: "Deployed Worker",
   buildUrl: "Build log",
 };
 
+const JOB_STATUS: Record<Job["status"], { label: string; tone: "neutral" | "ok" | "warn" | "err" | "accent" }> = {
+  queued: { label: "Queued", tone: "neutral" },
+  running: { label: "Running", tone: "accent" },
+  paused: { label: "Needs you", tone: "warn" },
+  failed: { label: "Failed", tone: "err" },
+  done: { label: "Done", tone: "ok" },
+};
+
+function StepDetails({ step }: { step: StepState }) {
+  const links = Object.entries(step.outputs).filter(([k]) => k in LINK_OUTPUTS);
+  if (!links.length && !step.error && !step.pause) return null;
+  return (
+    <>
+      {links.length > 0 && (
+        <div className="output-links">
+          {links.map(([k, v]) => (
+            <a key={k} className="output-link" href={v} target="_blank" rel="noreferrer">
+              <span className="output-link-label">{LINK_OUTPUTS[k]}</span>
+              <span>{v.replace(/^https?:\/\//, "")}</span>
+              <ExternalIcon />
+            </a>
+          ))}
+        </div>
+      )}
+      {step.error && <Callout tone="error">{step.error}</Callout>}
+      {step.pause && (
+        <Callout tone="warning">
+          <p style={{ margin: 0 }}>{step.pause.reason}</p>
+          {(step.pause.actionUrl || step.pause.reconnect) && (
+            <div className="row" style={{ marginTop: "0.6rem" }}>
+              {step.pause.actionUrl && (
+                <ButtonLink href={step.pause.actionUrl} target="_blank" rel="noreferrer">
+                  {step.pause.actionLabel ?? "Open"} <ExternalIcon />
+                </ButtonLink>
+              )}
+              {step.pause.reconnect && (
+                <span className="small">
+                  <a href="#/connect">Reconnect {step.pause.reconnect}</a>, then select Check again.
+                </span>
+              )}
+            </div>
+          )}
+        </Callout>
+      )}
+    </>
+  );
+}
+
+function LogLine({ line }: { line: string }) {
+  const match = line.match(/^(\[[a-z-]+\] )(.*)$/);
+  if (!match) return <>{line}</>;
+  const [, prefix, rest = ""] = match;
+  return (
+    <>
+      <span className="log-step">{prefix}</span>
+      <span className={rest.startsWith("Warning:") ? "log-warning" : undefined}>{rest}</span>
+    </>
+  );
+}
+
+function Log({ lines }: { lines: string[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  // Follow new output while the reader is at the bottom, and leave them alone once they scroll up.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+  return (
+    <div
+      ref={ref}
+      className="log"
+      role="log"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      }}
+    >
+      {lines.length === 0
+        ? "No output yet."
+        : lines.map((l, i) => (
+            <div key={i}>
+              <LogLine line={l} />
+            </div>
+          ))}
+    </div>
+  );
+}
+
 export function JobPage({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -79,68 +166,101 @@ export function JobPage({ jobId }: { jobId: string }) {
   };
 
   if (!job) {
-    return (
-      <main>
-        <p className={error ? "error" : ""}>{error ?? "Loading…"}</p>
-      </main>
-    );
+    return <main>{error ? <Callout tone="error">{error}</Callout> : <Loading>Loading the migration…</Loading>}</main>;
   }
+
   const workingCopy = job.steps.find((s) => s.id === "clone")?.outputs.dir;
+  const done = job.steps.filter((s) => s.status === "done").length;
+  const status = JOB_STATUS[job.status];
+  const canRetry = job.status === "failed" || job.status === "paused";
 
   return (
     <main>
-      <h1>Moving {job.plan.projectName}</h1>
-      <p className="lede">Status: {job.status}</p>
-      {error && <p className="error">{error}</p>}
-      <ol className="steps">
-        {job.steps.map((s) => (
-          <li key={s.id}>
-            <strong>{STEP_TITLES[s.id]}</strong> – <span className={s.status === "failed" ? "error" : s.status === "paused" ? "warning" : s.status === "done" ? "ok" : ""}>{STATUS_LABELS[s.status]}</span>
-            {Object.entries(s.outputs)
-              .filter(([k]) => k in LINK_OUTPUTS)
-              .map(([k, v]) => (
-                <div key={k}>
-                  {LINK_OUTPUTS[k]}:{" "}
-                  <a href={v} target="_blank" rel="noreferrer">
-                    {v}
-                  </a>
-                </div>
-              ))}
-            {s.error && <p className="error">{s.error}</p>}
-            {s.pause && (
-              <div className="warning">
-                <p>{s.pause.reason}</p>
-                {s.pause.actionUrl && (
-                  <p>
-                    <a className="button" href={s.pause.actionUrl} target="_blank" rel="noreferrer">
-                      {s.pause.actionLabel ?? "Open"}
-                    </a>
-                  </p>
-                )}
-                {s.pause.reconnect && (
-                  <p>
-                    <a href="#/connect">Reconnect {s.pause.reconnect}</a>, then select Check again.
-                  </p>
-                )}
-              </div>
+      <div className="page-head">
+        <div className="page-head-row">
+          <div>
+            <h1>Moving {job.plan.projectName}</h1>
+            <p className="lede">
+              To the Worker <code>{job.plan.workerName}</code>
+              {job.plan.repo && (
+                <>
+                  {" "}
+                  from <code>{`${job.plan.repo.owner}/${job.plan.repo.name}`}</code>
+                </>
+              )}
+            </p>
+          </div>
+          <div className="row">
+            <Pill tone={status.tone}>
+              {job.status === "running" && <Spinner size="sm" />}
+              {status.label}
+            </Pill>
+            {canRetry && (
+              <Button variant="primary" busy={busy} onClick={() => void retry()}>
+                {job.status === "paused" ? "Check again" : "Retry"}
+              </Button>
             )}
-          </li>
-        ))}
-      </ol>
-      {(job.status === "failed" || job.status === "paused") && (
-        <button className="primary" disabled={busy} onClick={() => void retry()}>
-          {job.status === "paused" ? "Check again" : "Retry"}
-        </button>
-      )}
-      {workingCopy && (
-        <p>
-          Working copy: <code>{workingCopy}</code>{" "}
-          <button onClick={() => void navigator.clipboard.writeText(workingCopy)}>Copy path</button>
-        </p>
-      )}
-      <h2>Log</h2>
-      <div className="log" role="log">
-        {lines.join("\n") || "No output yet."}
+          </div>
+        </div>
+        <Progress.Root className="progress" value={(done / job.steps.length) * 100} data-tone={job.status}>
+          <div className="progress-label">
+            <Progress.Label>
+              {done} of {job.steps.length} steps done
+            </Progress.Label>
+          </div>
+          <Progress.Track className="progress-track">
+            <Progress.Indicator className="progress-indicator" />
+          </Progress.Track>
+        </Progress.Root>
+      </div>
+
+      {error && <Callout tone="error">{error}</Callout>}
+
+      <div className="stack">
+        <Card>
+          <StepChain
+            steps={job.steps.map((s) => ({
+              id: s.id,
+              title: STEP_TITLES[s.id],
+              status: s.status,
+              details: <StepDetails step={s} />,
+            }))}
+          />
+        </Card>
+
+        {workingCopy && (
+          <Card>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="small muted">Working copy</div>
+                <code style={{ wordBreak: "break-all" }}>{workingCopy}</code>
+              </div>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  void navigator.clipboard.writeText(workingCopy).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  });
+                }}
+              >
+                <CopyIcon /> {copied ? "Copied" : "Copy path"}
+              </Button>
+            </div>
+          </Card>
+        )}
+
+        <Card>
+          <Collapsible.Root defaultOpen>
+            <Collapsible.Trigger className="collapsible-trigger">
+              Log <span className="muted small">({lines.length} lines)</span>
+              <ChevronIcon />
+            </Collapsible.Trigger>
+            <Collapsible.Panel className="collapsible-panel">
+              <Log lines={lines} />
+            </Collapsible.Panel>
+          </Collapsible.Root>
+        </Card>
       </div>
     </main>
   );

@@ -15,7 +15,7 @@ export interface RunnerDeps {
 const SERVICE_NAMES: Record<Service, string> = { vercel: "Vercel", cloudflare: "Cloudflare", github: "GitHub" };
 
 function describe(e: unknown): string {
-  if (e instanceof CommandError) return `${e.message}. The output is in the log above.`;
+  if (e instanceof CommandError) return `${e.message}. The output is in the log.`;
   return e instanceof Error ? e.message : String(e);
 }
 

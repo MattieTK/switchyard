@@ -141,12 +141,18 @@ export function connectRoutes(d: AppDeps): Hono {
   // Not behind the token guard: Cloudflare redirects here. The state
   // parameter, known only to this server, authenticates the request instead.
   r.get("/auth/cloudflare/callback", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const q = c.req.query();
+    // Take the state first, on every path: the launch token is only handed
+    // back to a request that proves it knows a state this server issued.
+    const verifier = d.oauth.pending.take(q.state ?? "");
+    if (!verifier) {
+      return c.redirect(`/#/connect?error=${encodeURIComponent("The login link expired or was already used. Try again.")}`);
+    }
     const back = (error?: string) =>
       c.redirect(`/?t=${encodeURIComponent(d.launchToken)}#/connect${error ? `?error=${encodeURIComponent(error)}` : ""}`);
-    const q = c.req.query();
     if (q.error) return back(q.error_description ?? q.error);
-    const verifier = d.oauth.pending.take(q.state ?? "");
-    if (!verifier || !q.code) return back("The login link expired or was already used. Try again.");
+    if (!q.code) return back("The login link expired or was already used. Try again.");
     try {
       const tokens = await exchangeCode(d.fetch, {
         clientId: d.oauth.clientId,

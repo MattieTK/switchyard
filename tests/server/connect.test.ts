@@ -61,11 +61,26 @@ describe("Cloudflare OAuth", () => {
     expect(location.searchParams.get("state")).toBeTruthy();
   });
 
-  it("rejects a callback with an unknown state", async () => {
+  it("rejects a callback with an unknown state without revealing the launch token", async () => {
     const { req } = await makeApp();
     const res = await req("/auth/cloudflare/callback?code=c&state=nope", { headers: { "x-switchyard-token": "" } });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toContain("#/connect?error=");
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("#/connect?error=");
+    expect(location).not.toContain(TOKEN);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("does not reveal the launch token or reflect text when there is no valid state", async () => {
+    const { req } = await makeApp();
+    const res = await req("/auth/cloudflare/callback?error=x&error_description=evil", {
+      headers: { "x-switchyard-token": "" },
+    });
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("#/connect?error=");
+    expect(location).not.toContain(TOKEN);
+    expect(location).not.toContain("evil");
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
   it("exchanges the code, stores tokens and picks the only account", async () => {
@@ -87,12 +102,17 @@ describe("Cloudflare OAuth", () => {
     });
   });
 
-  it("reports an OAuth error returned by Cloudflare", async () => {
-    const { req } = await makeApp();
-    const res = await req("/auth/cloudflare/callback?error=access_denied&error_description=User%20said%20no", {
-      headers: { "x-switchyard-token": "" },
-    });
-    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("User said no");
+  it("reports an OAuth error returned by Cloudflare when the state is valid", async () => {
+    const { req, deps } = await makeApp();
+    const { state } = deps.oauth.pending.create();
+    const res = await req(
+      `/auth/cloudflare/callback?error=access_denied&error_description=User%20said%20no&state=${state}`,
+      { headers: { "x-switchyard-token": "" } },
+    );
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain(`t=${TOKEN}`);
+    expect(decodeURIComponent(location)).toContain("User said no");
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 });
 

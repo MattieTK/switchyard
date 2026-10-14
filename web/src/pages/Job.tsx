@@ -49,8 +49,15 @@ export function JobPage({ jobId }: { jobId: string }) {
           const { step, line } = JSON.parse((e as MessageEvent<string>).data) as { step: StepId; line: string };
           setLines((l) => [...l, `[${step}] ${line}`].slice(-MAX_LINES));
         });
-        source.addEventListener("error", () => {
-          if (source?.readyState === EventSource.CLOSED) setError("Lost the connection to Switchyard. Reload to reconnect.");
+        source.addEventListener("error", (e) => {
+          // A server-sent error event carries a message; a native connection error does not.
+          const message = (e as MessageEvent<string | undefined>).data;
+          if (typeof message === "string" && message) {
+            setError(message);
+            source?.close();
+          } else if (source?.readyState === EventSource.CLOSED) {
+            setError("Lost the connection to Switchyard. Reload to reconnect.");
+          }
         });
       })
       .catch((e: Error) => setError(e.message));

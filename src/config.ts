@@ -15,14 +15,14 @@ export const PORT = 4417;
 export const ORIGIN = `http://localhost:${PORT}`;
 export const CLOUDFLARE_REDIRECT_URI = `${ORIGIN}/auth/cloudflare/callback`;
 
-// Public PKCE client registered on the maintainer's Cloudflare account (no secret). Set once the client exists.
-export const CLOUDFLARE_CLIENT_ID = "";
+// Public PKCE client "Switchyard (local)" on the maintainer's Cloudflare account (no secret).
+export const CLOUDFLARE_CLIENT_ID = "fd44d867323dfcafb07057f91e3730c1";
 
 export const CLOUDFLARE_SCOPES = [
   "user-details.read",
   "memberships.read",
   "account-settings.read",
-  "workers-scripts.write",
+  "workers-scripts.edit",
   "workers-ci.write",
   "workers-kv-storage.write",
   "workers-r2.write",

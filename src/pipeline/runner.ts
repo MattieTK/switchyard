@@ -46,7 +46,9 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
 
     const log = (line: string) => {
       const clean = d.redactor.redact(line);
-      void d.store.appendLog(jobId, `[${step.id}] ${clean}`).catch(() => undefined);
+      void d.store
+        .appendLog(jobId, `[${step.id}] ${clean}`)
+        .catch(() => console.error(`Could not write the log for job ${jobId}`));
       d.events.emit({ type: "log", jobId, step: step.id, line: clean });
     };
     const ctx: StepContext = {
@@ -82,6 +84,7 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
       }
       log(state.error ?? state.pause?.reason ?? "Stopped");
       await publish();
+      await d.store.flush(jobId);
       return job;
     }
   }
@@ -89,6 +92,7 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
   job.status = "done";
   await d.store.deleteValues(jobId);
   await publish();
+  await d.store.flush(jobId);
   return job;
 }
 

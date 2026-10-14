@@ -10,7 +10,6 @@ import { samplePlan } from "../helpers/sample-plan.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
 
 const step = (id: StepId, run: Step["run"]): Step => ({ id, title: id, run });
-const ok = (id: StepId) => step(id, async () => {});
 
 async function setup() {
   const store = createJobStore(await makeTempDir());
@@ -45,8 +44,12 @@ describe("runJob", () => {
   it("pauses on PauseError and resumes from that step after a retry", async () => {
     const { deps, job, store } = await setup();
     let attempts = 0;
+    let cloneRuns = 0;
     const steps = [
-      ok("clone"),
+      step("clone", async (ctx) => {
+        cloneRuns++;
+        ctx.outputs.dir = "/w";
+      }),
       step("convert", async () => {
         attempts++;
         if (attempts === 1) throw new PauseError({ reason: "Install the app", actionUrl: "https://x" });
@@ -59,6 +62,8 @@ describe("runJob", () => {
     const done = await runJob(job.id, steps, deps);
     expect(done.status).toBe("done");
     expect(attempts).toBe(2);
+    expect(cloneRuns).toBe(1);
+    expect(done.steps[0]).toMatchObject({ status: "done", outputs: { dir: "/w" } });
   });
 
   it("pauses for reconnection on auth errors", async () => {

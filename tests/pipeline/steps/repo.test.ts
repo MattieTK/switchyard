@@ -206,6 +206,62 @@ describe("buildStep", () => {
     expect(calls[0]?.opts?.env).toEqual({ NEXT_PUBLIC_API: "https://api.example.com", CI: "1" });
   });
 
+  it("adds packages that dependencies import without declaring, at their previous version, and builds again", async () => {
+    const projectDir = await makeTempDir();
+    const failure = `Error: [vite]: Rolldown failed to resolve import "@babel/runtime/regenerator" from "${projectDir}/node_modules/react-twitter-widgets/es/index.js".`;
+    let builds = 0;
+    const { run, calls } = fakeRunner((cmd, args) => {
+      if (args.includes("build")) return { code: builds++ === 0 ? 1 : 0, output: builds === 1 ? failure : "Build complete" };
+      if (cmd === "git" && args[0] === "show") {
+        return args[1] === "origin/main:yarn.lock"
+          ? { code: 0, output: '"@babel/runtime@7.12.5":\n  version "7.12.5"\n' }
+          : { code: 128, output: "fatal: path does not exist" };
+      }
+      return { code: 0, output: "" };
+    });
+    const { ctx, logs } = makeContext({
+      plan: { packageManager: "yarn" },
+      deps: { run },
+      outputs: { clone: { dir: projectDir }, convert: { projectDir } },
+    });
+    await buildStep.run(ctx);
+    expect(calls.filter((c) => c.cmd === "yarn").map((c) => c.args)).toEqual([
+      ["cf", "build"],
+      ["add", "@babel/runtime@^7.12.5"],
+      ["cf", "build"],
+    ]);
+    const warning =
+      "react-twitter-widgets imports @babel/runtime without listing it as a dependency, so the build couldn't find it. Switchyard added @babel/runtime@^7.12.5, the version the project had installed before, to package.json.";
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([warning]);
+    expect(logs).toContain(`Warning: ${warning}`);
+  });
+
+  it("adds the latest release when the project never had the package, and says so", async () => {
+    const projectDir = await makeTempDir();
+    const failure = `Rolldown failed to resolve import "tiny-warning" from "${projectDir}/node_modules/lib/index.js".`;
+    let builds = 0;
+    const { run, calls } = fakeRunner((cmd, args) => {
+      if (args.includes("build")) return { code: builds++ === 0 ? 1 : 0, output: builds === 1 ? failure : "" };
+      if (cmd === "git") return { code: 128, output: "" };
+      return { code: 0, output: "" };
+    });
+    const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: projectDir }, convert: { projectDir } } });
+    await buildStep.run(ctx);
+    expect(calls.find((c) => c.args[0] === "add")?.args).toEqual(["add", "tiny-warning"]);
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")[0]).toContain("Switchyard added the latest tiny-warning");
+  });
+
+  it("gives up when the missing package is already installed, so the failure is something else", async () => {
+    const projectDir = await makeTempDir();
+    await mkdir(join(projectDir, "node_modules/tiny-warning"), { recursive: true });
+    await writeFile(join(projectDir, "node_modules/tiny-warning/package.json"), "{}");
+    const failure = `Rolldown failed to resolve import "tiny-warning/sub" from "${projectDir}/node_modules/lib/index.js".`;
+    const { run, calls } = fakeRunner(() => ({ code: 1, output: failure }));
+    const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: projectDir }, convert: { projectDir } } });
+    await expect(buildStep.run(ctx)).rejects.toBeInstanceOf(CommandError);
+    expect(calls).toHaveLength(1);
+  });
+
   it("fails with the command's output when the build fails", async () => {
     const { run } = fakeRunner(() => ({ code: 1, output: "Type error" }));
     const { ctx } = makeContext({ deps: { run }, outputs: { convert: { projectDir: "/w/app" } } });

@@ -185,7 +185,11 @@ describe("prStep", () => {
     const gh = { findOpenPr: async () => null, createPr } as unknown as GitHubClient;
     const { ctx } = makeContext({
       deps: { github: async () => gh },
-      outputs: { deploy: { workersDevUrl: "https://shop.acme.workers.dev" }, convert: { warnings: '["w1"]' } },
+      outputs: {
+        deploy: { workersDevUrl: "https://shop.acme.workers.dev" },
+        convert: { warnings: '["w1"]' },
+        build: { warnings: '["w2"]' },
+      },
     });
     await prStep.run(ctx);
     const [owner, repo, input] = createPr.mock.calls[0] as unknown as [string, string, { head: string; base: string; title: string; body: string }];
@@ -193,5 +197,6 @@ describe("prStep", () => {
     expect(input.title).toBe("Move shop from Vercel to Cloudflare Workers");
     expect(input.body).toContain("https://shop.acme.workers.dev");
     expect(input.body).toContain("- [ ] w1");
+    expect(input.body).toContain("- [ ] w2");
   });
 });

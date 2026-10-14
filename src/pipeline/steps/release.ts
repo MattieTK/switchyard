@@ -90,7 +90,9 @@ export const prStep: Step = {
     const repo = requireRepo(plan);
     const gh = await ctx.deps.github();
     const existing = await gh.findOpenPr(repo.owner, repo.name, MIGRATION_BRANCH);
-    const warnings = JSON.parse(ctx.output("convert").warnings ?? "[]") as string[];
+    const warnings = (["convert", "build"] as const).flatMap(
+      (step) => JSON.parse(ctx.output(step).warnings ?? "[]") as string[],
+    );
     const pr =
       existing ??
       (await gh.createPr(repo.owner, repo.name, {

@@ -17,6 +17,11 @@ export function installCommand(pm: PackageManager): { cmd: string; args: string[
   return { cmd: pm, args: ["install"] };
 }
 
+// Adds packages to the project's dependencies.
+export function addCommand(pm: PackageManager, packages: readonly string[]): { cmd: string; args: string[] } {
+  return { cmd: pm, args: [pm === "npm" ? "install" : "add", ...packages] };
+}
+
 // Runs a binary installed in the project's node_modules.
 export function execCommand(pm: PackageManager, bin: string, args: readonly string[]): { cmd: string; args: string[] } {
   switch (pm) {

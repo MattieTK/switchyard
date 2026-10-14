@@ -11,13 +11,23 @@ function client(responses: Parameters<typeof fakeFetch>[0]) {
 }
 
 describe("createCloudflareClient", () => {
-  it("pages through accounts", async () => {
+  it("lists accepted account memberships, with whether the user can deploy Workers", async () => {
+    const member = (id: string, edit: boolean, status = "accepted") => ({
+      status,
+      account: { id, name: id.toUpperCase() },
+      permissions: { worker: { read: true, edit } },
+    });
     const { c, calls } = client([
-      ok([{ id: "a1", name: "One" }], { page: 1, total_pages: 2 }),
-      ok([{ id: "a2", name: "Two" }], { page: 2, total_pages: 2 }),
+      ok([member("a1", true), member("a2", false)], { page: 1, total_pages: 2 }),
+      ok([member("a3", true, "pending"), { status: "accepted", account: { id: "a4", name: "A4" } }], { page: 2, total_pages: 2 }),
     ]);
-    expect((await c.listAccounts()).map((a) => a.id)).toEqual(["a1", "a2"]);
-    expect(calls[1]?.url).toBe(`${BASE}/accounts?page=2&per_page=50`);
+    expect(await c.listAccounts()).toEqual([
+      { id: "a1", name: "A1", canDeployWorkers: true },
+      { id: "a2", name: "A2", canDeployWorkers: false },
+      // Without permission details, Switchyard doesn't assume the worst.
+      { id: "a4", name: "A4", canDeployWorkers: true },
+    ]);
+    expect(calls[1]?.url).toBe(`${BASE}/memberships?page=2&per_page=50`);
   });
 
   it("filters zones by account", async () => {

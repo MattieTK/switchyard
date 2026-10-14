@@ -62,8 +62,14 @@ export const pushStep: Step = {
     await local(["add", "-A"]);
     const status = await runOrThrow(ctx.deps.run, "git", ["status", "--porcelain"], { cwd: repoDir });
     if (status.output.trim()) {
+      // The repository's own hooks aren't Switchyard's to run, and a fresh clone may have no git identity.
+      const identity = await ctx.deps.run("git", ["config", "user.email"], { cwd: repoDir });
+      const asSwitchyard =
+        identity.code === 0 && identity.stdout.trim() ? [] : ["-c", "user.name=Switchyard", "-c", "user.email=switchyard@localhost"];
       await local([
+        ...asSwitchyard,
         "commit",
+        "--no-verify",
         "-m",
         "chore: move hosting from Vercel to Cloudflare Workers",
         "-m",

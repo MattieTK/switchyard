@@ -8,7 +8,22 @@ export interface VercelJsonTranslation {
   manual: string[];
 }
 
-const CRON_FIELDS = /^\S+(\s+\S+){4}$/;
+// Captures the first four fields (keeping their original spacing) and the day-of-week field.
+const CRON_SCHEDULE = /^(\S+(?:\s+\S+){3}\s+)(\S+)$/;
+
+type DayNumber = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+// Cloudflare reads weekdays as names. Standard cron numbers them from 0 (Sunday), and 7 also means Sunday.
+const DAY_NAMES: Record<DayNumber, string> = { 0: "SUN", 1: "MON", 2: "TUE", 3: "WED", 4: "THU", 5: "FRI", 6: "SAT", 7: "SUN" };
+const DAY_NUMBERS = new Map<string, DayNumber>([
+  ["SUN", 0],
+  ["MON", 1],
+  ["TUE", 2],
+  ["WED", 3],
+  ["THU", 4],
+  ["FRI", 5],
+  ["SAT", 6],
+]);
 
 const NOTES: Record<string, string> = {
   functions:
@@ -24,6 +39,50 @@ const NOTES: Record<string, string> = {
 };
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+// Returns the day for a number from 0 to 7 or a three-letter name, or null for anything else.
+function dayNumber(token: string): DayNumber | null {
+  if (/^[0-7]$/.test(token)) return Number(token) as DayNumber;
+  return DAY_NUMBERS.get(token.toUpperCase()) ?? null;
+}
+
+// Translates one range, `*` or single day, without any step.
+function translateDayRange(base: string): string | null {
+  if (base === "*") return "*";
+  const [start = "", end, ...extra] = base.split("-");
+  const from = dayNumber(start);
+  if (extra.length > 0 || from === null) return null;
+  if (end === undefined) return DAY_NAMES[from];
+  // 7 is Sunday in standard cron, so a range ending in 7 would read as `MON-SUN` rather than the rest of the week,
+  // and `0-7` would read as `SUN-SUN`. Those, and reversed ranges, are rejected rather than guessed at.
+  const to = dayNumber(end);
+  if (to === null || from === 7 || to === 7 || from > to) return null;
+  return `${DAY_NAMES[from]}-${DAY_NAMES[to]}`;
+}
+
+// Translates one comma-separated part of the day-of-week field. A step after `/` is a count, so it is kept as written.
+function translateDayPart(part: string): string | null {
+  const [base = "", step, ...extra] = part.split("/");
+  if (extra.length > 0 || (step !== undefined && !/^[1-9]\d*$/.test(step))) return null;
+  const range = translateDayRange(base);
+  if (range === null) return null;
+  return step === undefined ? range : `${range}/${step}`;
+}
+
+function translateDayOfWeek(field: string): string | null {
+  const parts = field.split(",").map(translateDayPart);
+  return parts.every((p): p is string => p !== null) ? parts.join(",") : null;
+}
+
+// Returns the schedule with its day-of-week field translated, or null if the schedule is malformed.
+function translateSchedule(raw: string): string | null {
+  const match = CRON_SCHEDULE.exec(raw.trim());
+  const head = match?.[1];
+  const dayField = match?.[2];
+  if (head === undefined || dayField === undefined) return null;
+  const day = translateDayOfWeek(dayField);
+  return day === null ? null : head + day;
+}
 
 export function translateVercelJson(raw: string | null): VercelJsonTranslation {
   if (raw === null) return { crons: [], manual: [] };
@@ -45,8 +104,9 @@ export function translateVercelJson(raw: string | null): VercelJsonTranslation {
     if (key === "$schema") continue;
     if (key === "crons" && Array.isArray(value)) {
       for (const c of value as (Partial<CronJob> | null)[]) {
-        if (typeof c?.path === "string" && c.path.startsWith("/") && typeof c.schedule === "string" && CRON_FIELDS.test(c.schedule.trim())) {
-          crons.push({ path: c.path, schedule: c.schedule.trim() });
+        const schedule = typeof c?.schedule === "string" ? translateSchedule(c.schedule) : null;
+        if (typeof c?.path === "string" && c.path.startsWith("/") && schedule !== null) {
+          crons.push({ path: c.path, schedule });
         } else {
           manual.push(`Cron job ${JSON.stringify(c)} in vercel.json isn't valid, so it wasn't translated.`);
         }

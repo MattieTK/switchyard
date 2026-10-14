@@ -73,4 +73,32 @@ describe("translateVercelJson", () => {
     expect(t.manual).toEqual(["`constructor` in vercel.json isn't translated.", "`__proto__` in vercel.json isn't translated."]);
     expect(t.manual.every((m) => typeof m === "string")).toBe(true);
   });
+
+  describe("day-of-week translation", () => {
+    const cronAt = (schedule: string) => translateVercelJson(JSON.stringify({ crons: [{ path: "/api/x", schedule }] }));
+
+    it.each([
+      ["0 5 * * 1", "0 5 * * MON"],
+      ["0 0 * * 0", "0 0 * * SUN"],
+      ["0 0 * * 7", "0 0 * * SUN"],
+      ["0 9 * * 1-5", "0 9 * * MON-FRI"],
+      ["0 0 * * 1,3,5", "0 0 * * MON,WED,FRI"],
+      ["*/15 * * * *", "*/15 * * * *"],
+      ["0 0 * * */2", "0 0 * * */2"],
+      ["0 0 * * 1-5/2", "0 0 * * MON-FRI/2"],
+      ["0 0 * * mon-fri", "0 0 * * MON-FRI"],
+    ])("translates %s to %s", (input, expected) => {
+      expect(cronAt(input)).toEqual({ crons: [{ path: "/api/x", schedule: expected }], manual: [] });
+    });
+
+    it.each(["0 0 * * 9", "0 0 * * 1-7", "0 0 * * 0-7", "0 0 * * 5-1", "0 0 * * 1,,3", "0 0 * * */0", "0 0 * * funday"])(
+      "reports %s as invalid",
+      (input) => {
+        const t = cronAt(input);
+        expect(t.crons).toEqual([]);
+        expect(t.manual).toHaveLength(1);
+        expect(t.manual[0]).toContain("isn't valid");
+      },
+    );
+  });
 });

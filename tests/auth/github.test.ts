@@ -18,6 +18,15 @@ describe("resolveGitHubAuth", () => {
     expect(calls[0]).toMatchObject({ cmd: "gh", args: ["auth", "token"] });
   });
 
+  it("reads the token from stdout when gh also writes to stderr", async () => {
+    const { run } = fakeRunner(() => ({
+      code: 0,
+      output: "A new release of gh is available: 2.0.0\ngho_abc\n",
+      stdout: "gho_abc\n",
+    }));
+    expect(await resolveGitHubAuth(run, await store("ghp_pat"))).toEqual({ token: "gho_abc", source: "gh" });
+  });
+
   it("falls back to the stored PAT when gh is logged out", async () => {
     const { run } = fakeRunner(() => ({ code: 1, output: "not logged in" }));
     expect(await resolveGitHubAuth(run, await store("ghp_pat"))).toEqual({ token: "ghp_pat", source: "pat" });

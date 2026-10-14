@@ -4,6 +4,7 @@ import type { GitHubClient } from "../clients/github.ts";
 import type { CommandRunner } from "../exec.ts";
 import type { Service } from "../http.ts";
 import type { EnvValues } from "../translate/env-plan.ts";
+import type { PackageManager } from "../translate/package-manager.ts";
 import type { MigrationPlan } from "./plan.ts";
 
 export const STEP_IDS = ["clone", "convert", "build", "deploy", "push", "pr", "builds", "start-build"] as const;
@@ -45,6 +46,8 @@ export interface PipelineDeps {
   githubToken(): Promise<string>;
   cloudflareToken(): Promise<string>;
   adapter(id: string): Adapter | null;
+  // Makes sure the project's package manager can run, setting it up if needed.
+  ensurePackageManager(pm: PackageManager, cwd: string, log: (line: string) => void): Promise<void>;
   workDir: string;
   sleep(ms: number): Promise<void>;
   now(): number;

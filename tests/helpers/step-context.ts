@@ -31,6 +31,7 @@ export function makeContext(
     githubToken: async () => "gh-token",
     cloudflareToken: async () => "cf-token",
     adapter: () => null,
+    ensurePackageManager: async () => {},
     workDir: "/tmp/switchyard-test-work",
     sleep: async () => {},
     now: () => 0,

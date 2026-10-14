@@ -7,6 +7,8 @@ export interface Paths {
   credentialsFile: string;
   jobsDir: string;
   workDir: string;
+  // Package manager shims Switchyard sets up through corepack.
+  binDir: string;
 }
 
 export function resolvePaths(
@@ -26,5 +28,6 @@ export function resolvePaths(
     credentialsFile: join(configDir, "credentials.json"),
     jobsDir: join(configDir, "jobs"),
     workDir: join(cacheDir, "work"),
+    binDir: join(cacheDir, "bin"),
   };
 }

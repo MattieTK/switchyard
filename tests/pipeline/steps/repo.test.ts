@@ -146,6 +146,30 @@ describe("convertStep", () => {
     expect(ctx.outputs.projectDir).toBe(join(repoDir, "apps/web"));
   });
 
+  it("makes sure the project's package manager can run before converting", async () => {
+    const repoDir = await makeTempDir();
+    const order: string[] = [];
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        order.push("convert");
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx } = makeContext({
+      plan: { packageManager: "yarn" },
+      deps: {
+        adapter: () => adapter,
+        ensurePackageManager: async (pm, cwd) => {
+          order.push(`ensure ${pm} ${cwd}`);
+        },
+      },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    expect(order).toEqual([`ensure yarn ${repoDir}`, "convert"]);
+  });
+
   it("fails clearly when the converter produced no cloudflare.config.ts", async () => {
     const repoDir = await makeTempDir();
     const adapter = { convert: async () => ({ baseEntrypoint: "x", warnings: [] }) } as unknown as Adapter;

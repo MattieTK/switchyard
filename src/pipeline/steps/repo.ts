@@ -63,6 +63,7 @@ export const convertStep: Step = {
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");
     if (!adapter) throw new Error(`There is no converter for ${plan.adapterId ?? "this framework"}.`);
     const dir = projectDirFor(repoDir, repo.rootDirectory);
+    await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
       pm: plan.packageManager,

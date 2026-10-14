@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { delimiter } from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
@@ -33,13 +34,19 @@ export class CommandError extends Error {
 
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
 
+// Corepack shims must never stop to ask before downloading, or pin a version into the user's package.json.
+const COREPACK_ENV = { COREPACK_ENABLE_DOWNLOAD_PROMPT: "0", COREPACK_ENABLE_AUTO_PIN: "0" };
+
 // Runs a command without a shell, so arguments are never interpreted.
-export function createCommandRunner(): CommandRunner {
+// pathPrefix goes first on PATH, for tools Switchyard sets up itself.
+export function createCommandRunner(options: { pathPrefix?: string } = {}): CommandRunner {
+  const basePath = process.env.PATH ?? "";
+  const PATH = options.pathPrefix ? [options.pathPrefix, basePath].filter(Boolean).join(delimiter) : basePath;
   return (cmd, args, opts = {}) =>
     new Promise((resolve, reject) => {
       const child = spawn(cmd, args, {
         cwd: opts.cwd,
-        env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...opts.env },
+        env: { ...process.env, PATH, ...COREPACK_ENV, FORCE_COLOR: "0", NO_COLOR: "1", ...opts.env },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";
@@ -72,9 +79,13 @@ export function createCommandRunner(): CommandRunner {
       ];
 
       const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : undefined;
-      child.on("error", (err) => {
+      child.on("error", (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
-        reject(err);
+        // A missing command can surface as EACCES rather than ENOENT, for example when WSL
+        // puts unreadable Windows folders on PATH, so both get the same explanation.
+        if (err.code === "ENOENT" || err.code === "EACCES") {
+          reject(new Error(`Couldn't start ${cmd} (${err.code}). Check it's installed and on PATH.`, { cause: err }));
+        } else reject(err);
       });
       child.on("close", (code, signal) => {
         clearTimeout(timer);

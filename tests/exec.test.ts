@@ -54,6 +54,18 @@ describe("createCommandRunner", () => {
     await expect(run("/nonexistent-sy-dir/definitely-not-a-command-sy", [])).rejects.toThrow(/ENOENT/);
   });
 
+  it("names the command that couldn't be started", async () => {
+    await expect(run("definitely-not-a-command-sy", [])).rejects.toThrow(
+      /^Couldn't start definitely-not-a-command-sy \((ENOENT|EACCES)\)\. Check it's installed and on PATH\.$/,
+    );
+  });
+
+  it("puts the path prefix first on PATH", async () => {
+    const prefixed = createCommandRunner({ pathPrefix: "/sy/bin" });
+    const r = await prefixed(node, ["-e", "console.log(process.env.PATH.split(require('path').delimiter)[0])"]);
+    expect(r.stdout.trim()).toBe("/sy/bin");
+  });
+
   it("kills the process after the timeout", async () => {
     const r = await run(node, ["-e", "setTimeout(() => {}, 10000)"], { timeoutMs: 200 });
     expect(r.code).not.toBe(0);

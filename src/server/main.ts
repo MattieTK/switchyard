@@ -18,12 +18,13 @@ import { createJobService } from "../pipeline/service.ts";
 import { STEPS } from "../pipeline/steps/index.ts";
 import type { PipelineDeps } from "../pipeline/types.ts";
 import { createRedactor } from "../redact.ts";
+import { ensurePackageManager } from "../toolchain.ts";
 import { createApp } from "./app.ts";
 import { describeListenError } from "./listen-error.ts";
 
 const paths = resolvePaths();
 const store = createCredentialStore(paths.credentialsFile);
-const run = createCommandRunner();
+const run = createCommandRunner({ pathPrefix: paths.binDir });
 const redactor = createRedactor();
 const cloudflareToken = createCloudflareTokenProvider({ store, fetch, clientId: CLOUDFLARE_CLIENT_ID });
 const clients = createClientFactory({ store, fetch, run, cloudflareToken });
@@ -37,6 +38,7 @@ const pipeline: PipelineDeps = {
   githubToken: async () => (await clients.githubAuth()).token,
   cloudflareToken,
   adapter: adapterById,
+  ensurePackageManager: (pm, cwd, log) => ensurePackageManager({ pm, cwd, run, binDir: paths.binDir, log }),
   workDir: paths.workDir,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: Date.now,

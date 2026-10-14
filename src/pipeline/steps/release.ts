@@ -8,7 +8,7 @@ import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
 import type { Step } from "../types.ts";
-import { git, requireOutput, requireRepo } from "./shared.ts";
+import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
 
 const WORKERS_DEV = /https:\/\/[a-z0-9.-]+\.workers\.dev/i;
 
@@ -36,7 +36,7 @@ export const deployStep: Step = {
       const result = await runOrThrow(ctx.deps.run, cmd, full, {
         cwd: dir,
         onLine: ctx.log,
-        env: { CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId },
+        env: { ...productionBuildEnv(ctx), CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId },
       });
       const url = result.output.match(WORKERS_DEV)?.[0];
       if (url) ctx.outputs.workersDevUrl = url;

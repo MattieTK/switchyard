@@ -133,6 +133,26 @@ describe("buildStep", () => {
     expect(calls[0]).toMatchObject({ cmd: "pnpm", args: ["exec", "cf", "build"], opts: { cwd: "/w/app", env: { CI: "1" } } });
   });
 
+  it("passes the production build variables to the build, with CI still set", async () => {
+    const { plan: env, values } = buildEnvPlan(
+      [
+        { id: "a", key: "NEXT_PUBLIC_API", value: "https://api.example.com", type: "plain", target: ["production"] },
+        { id: "b", key: "CI", value: "0", type: "plain", target: ["production"] },
+        { id: "c", key: "PREVIEW_ONLY", value: "x", type: "plain", target: ["preview"] },
+      ],
+      [],
+    );
+    const { run, calls } = fakeRunner();
+    const { ctx } = makeContext({
+      plan: { env },
+      values,
+      deps: { run },
+      outputs: { convert: { projectDir: "/w/app" } },
+    });
+    await buildStep.run(ctx);
+    expect(calls[0]?.opts?.env).toEqual({ NEXT_PUBLIC_API: "https://api.example.com", CI: "1" });
+  });
+
   it("fails with the command's output when the build fails", async () => {
     const { run } = fakeRunner(() => ({ code: 1, output: "Type error" }));
     const { ctx } = makeContext({ deps: { run }, outputs: { convert: { projectDir: "/w/app" } } });

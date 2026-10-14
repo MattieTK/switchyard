@@ -77,9 +77,17 @@ export function connectRoutes(d: AppDeps): Hono {
         "This token can't list projects. Create one scoped to a team with All Projects selected, or to Full Account.",
       );
     }
+    // A team-scoped token can read /v2/user and sees only its own team, so
+    // there is nothing for the user to choose.
+    const onlyTeam = scope.kind === "account" && scope.teams.length === 1 ? scope.teams[0] : undefined;
     await d.store.update((cr) => ({
       ...cr,
-      vercel: { token, scope: scope.kind, ...(probe.user ? { username: probe.user.username } : {}) },
+      vercel: {
+        token,
+        scope: scope.kind,
+        ...(probe.user ? { username: probe.user.username } : {}),
+        ...(onlyTeam ? { teamId: onlyTeam.id, teamName: onlyTeam.name } : {}),
+      },
     }));
     return c.json({
       ok: true,

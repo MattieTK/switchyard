@@ -22,6 +22,40 @@ describe("Vercel token", () => {
     expect((await store.read()).vercel).toEqual({ token: "old-style-token", scope: "team" });
   });
 
+  it("selects the only team automatically for an account-scoped token", async () => {
+    const f = fakeFetch([
+      json({ user: { id: "u", username: "matt" } }),
+      json({ teams: [{ id: "team_1", slug: "acme", name: "Acme" }] }),
+      json({ projects: [], pagination: { next: null } }),
+    ]);
+    const { req, store } = await makeApp({ fetch: f.fetch });
+    const res = await req("/api/vercel/token", { method: "POST", json: { token: "vcp_team" } });
+    expect(((await res.json()) as { scope: string }).scope).toBe("account");
+    expect((await store.read()).vercel).toEqual({
+      token: "vcp_team",
+      scope: "account",
+      username: "matt",
+      teamId: "team_1",
+      teamName: "Acme",
+    });
+  });
+
+  it("leaves the team unset when an account token sees several teams", async () => {
+    const f = fakeFetch([
+      json({ user: { id: "u", username: "matt" } }),
+      json({
+        teams: [
+          { id: "team_1", slug: "acme", name: "Acme" },
+          { id: "team_2", slug: "beta", name: "Beta" },
+        ],
+      }),
+      json({ projects: [], pagination: { next: null } }),
+    ]);
+    const { req, store } = await makeApp({ fetch: f.fetch });
+    await req("/api/vercel/token", { method: "POST", json: { token: "vcp_acct" } });
+    expect((await store.read()).vercel).toEqual({ token: "vcp_acct", scope: "account", username: "matt" });
+  });
+
   it("rejects a token Vercel refuses, without storing it", async () => {
     const bad = json({ error: { invalidToken: true, message: "Not authorized" } }, 403);
     const { req, store } = await makeApp({ fetch: fakeFetch([bad, bad.clone(), bad.clone()]).fetch });

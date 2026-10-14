@@ -27,12 +27,16 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 export function translateVercelJson(raw: string | null): VercelJsonTranslation {
   if (raw === null) return { crons: [], manual: [] };
-  let config: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    config = JSON.parse(raw) as Record<string, unknown>;
+    parsed = JSON.parse(raw);
   } catch (e) {
     return { crons: [], manual: [`vercel.json couldn't be parsed (${(e as Error).message}), so nothing in it was translated.`] };
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { crons: [], manual: ["vercel.json isn't a JSON object, so nothing in it was translated."] };
+  }
+  const config = parsed as Record<string, unknown>;
 
   const crons: CronJob[] = [];
   const manual: string[] = [];
@@ -40,8 +44,8 @@ export function translateVercelJson(raw: string | null): VercelJsonTranslation {
   for (const [key, value] of Object.entries(config)) {
     if (key === "$schema") continue;
     if (key === "crons" && Array.isArray(value)) {
-      for (const c of value as Partial<CronJob>[]) {
-        if (typeof c.path === "string" && c.path.startsWith("/") && typeof c.schedule === "string" && CRON_FIELDS.test(c.schedule.trim())) {
+      for (const c of value as (Partial<CronJob> | null)[]) {
+        if (typeof c?.path === "string" && c.path.startsWith("/") && typeof c.schedule === "string" && CRON_FIELDS.test(c.schedule.trim())) {
           crons.push({ path: c.path, schedule: c.schedule.trim() });
         } else {
           manual.push(`Cron job ${JSON.stringify(c)} in vercel.json isn't valid, so it wasn't translated.`);
@@ -60,7 +64,8 @@ export function translateVercelJson(raw: string | null): VercelJsonTranslation {
       manual.push(`${plural(n, one, many)} in vercel.json – add ${n === 1 ? "it" : "them"} to \`${fn}\` in next.config.js.`);
       continue;
     }
-    manual.push(NOTES[key] ?? `\`${key}\` in vercel.json isn't translated.`);
+    const note = Object.hasOwn(NOTES, key) ? NOTES[key] : undefined;
+    manual.push(note ?? `\`${key}\` in vercel.json isn't translated.`);
   }
   return { crons, manual };
 }

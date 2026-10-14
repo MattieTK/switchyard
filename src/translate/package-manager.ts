@@ -12,6 +12,11 @@ export function detectPackageManager(files: readonly string[], pkg: PackageJson 
   return "npm";
 }
 
+// Installs the project's dependencies.
+export function installCommand(pm: PackageManager): { cmd: string; args: string[] } {
+  return { cmd: pm, args: ["install"] };
+}
+
 // Runs a binary installed in the project's node_modules.
 export function execCommand(pm: PackageManager, bin: string, args: readonly string[]): { cmd: string; args: string[] } {
   switch (pm) {

@@ -78,6 +78,15 @@ describe("buildPlan", () => {
     expect(plan.warnings[0]).toContain("Choose another name");
   });
 
+  it("passes on the adapter's warnings, such as a Next.js upgrade", async () => {
+    const { plan } = await buildPlan(
+      deps({ github: { getFile: async (_o: string, _r: string, path: string) => (path.endsWith("package.json") ? '{"dependencies":{"next":"13.4.0"}}' : null) } }),
+      "prj_1",
+    );
+    expect(plan.blockers).toEqual([]);
+    expect(plan.warnings).toEqual([expect.stringContaining("This app uses Next.js 13.")]);
+  });
+
   it("blocks projects without a Git link or on another provider", async () => {
     const noLink = await buildPlan(deps({ project: { ...project, link: undefined } }), "p");
     expect(noLink.plan.blockers[0]).toContain("isn't linked to a Git repository");

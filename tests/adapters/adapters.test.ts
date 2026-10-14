@@ -96,6 +96,95 @@ describe("nextjsAdapter", () => {
     expect(r.warnings[0]).toContain("pnpm approve-builds");
   });
 
+  it("warns in the plan when the app's Next.js is older than 16", () => {
+    const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }) ?? [];
+    expect(rest).toEqual([]);
+    expect(warning).toBe(
+      "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
+    );
+    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "^16.1.0" } })).toEqual([]);
+    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "canary" } })).toEqual([]);
+    expect(nextjsAdapter.planWarnings?.(null)).toEqual([]);
+  });
+
+  it("installs, upgrades Next.js with the codemods, then runs vinext for an app older than 16", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "10.0.2" } }));
+    const { run, calls } = fakeRunner();
+    const r = await nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls.map((c) => [c.cmd, ...c.args.slice(0, 5)])).toEqual([
+      ["yarn", "install"],
+      ["yarn", "--version"],
+      ["npx", "--yes", "@next/codemod@16.4.1", "upgrade", "16.4.1", "--yes"],
+      ["npx", "--yes", "vinext@1.1.0", "init", "--platform=cloudflare", "--cdn-cache=data-cache"],
+    ]);
+    expect(calls[0]?.opts?.cwd).toBe(dir);
+    // The codemod picks its package manager from the user agent before the lockfile.
+    expect(calls[2]?.opts).toMatchObject({ cwd: dir, env: { npm_config_user_agent: "yarn/switchyard" } });
+    expect(r.warnings).toEqual([
+      "Switchyard upgraded Next.js from 10.0.2 to 16.4.1 with the official Next.js codemods. The codemods don't cover every breaking change, so review the pull request and test the preview before switching traffic.",
+    ]);
+  });
+
+  it("installs Next.js 11 first for an app older than 11, so the upgrade skips cra-to-next", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ devDependencies: { next: "^10.0.2" } }));
+    const declared: string[] = [];
+    const { run } = fakeRunner(async (_cmd, args) => {
+      if (args[0] === "install") declared.push(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).devDependencies.next);
+      return { code: 0, output: "" };
+    });
+    const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(declared).toEqual(["11.1.4"]);
+    expect(r.warnings[0]).toContain("from ^10.0.2 to 16.4.1");
+  });
+
+  it("hides Yarn 1's missing dlx from the upgrade, so its React codemods use npx", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    let wrapper: string | null = null;
+    const { run, calls } = fakeRunner(async (_cmd, args, opts) => {
+      if (args[0] === "--version") return { code: 0, output: "1.22.22\n" };
+      if (args[0] === "--yes" && args[1]?.startsWith("@next/codemod") && opts?.pathPrefix) {
+        wrapper = await readFile(join(opts.pathPrefix, "yarn"), "utf8");
+      }
+      return { code: 0, output: "" };
+    });
+    await nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls.map((c) => [c.cmd, c.args[0]])).toEqual([
+      ["yarn", "install"],
+      ["yarn", "--version"],
+      ["npx", "--yes"],
+      ["npx", "--yes"],
+    ]);
+    expect(wrapper).toContain('if [ "$1" = "dlx" ]; then');
+    expect(wrapper).toContain('exec yarn "$@"');
+    // The wrapper folder is removed afterwards.
+    await expect(readFile(join(calls[2]?.opts?.pathPrefix ?? "/missing", "yarn"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("leaves Yarn 2 and later alone, since they have dlx", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    const { run, calls } = fakeRunner((_cmd, args) => ({ code: 0, output: args[0] === "--version" ? "4.6.0\n" : "" }));
+    await nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls[2]?.opts?.pathPrefix).toBeUndefined();
+  });
+
+  it("runs the npm install and upgrade with legacy-peer-deps", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "^14.2.0" } }));
+    const { run, calls } = fakeRunner();
+    await nextjsAdapter.convert({ dir, pm: "npm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls.map((c) => [c.cmd, c.args[0], c.opts?.env?.npm_config_legacy_peer_deps])).toEqual([
+      ["npm", "install", "true"],
+      ["npx", "--yes", "true"],
+      ["npx", "--yes", "true"],
+    ]);
+  });
+
+  it("doesn't upgrade an app already on Next.js 16", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "16.2.0" } }));
+    const { run, calls } = fakeRunner();
+    await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls.map((c) => c.args[1])).toEqual(["vinext@1.1.0"]);
+  });
+
   it("fails when vinext init fails", async () => {
     const { run } = fakeRunner(() => ({ code: 1, output: "incompatible" }));
     await expect(

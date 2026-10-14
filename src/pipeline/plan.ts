@@ -115,7 +115,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   const dependencies = allDependencies(pkg);
 
   const workerName = sanitizeWorkerName(project.name);
-  const warnings: string[] = [];
+  const warnings: string[] = [...(adapter?.planWarnings?.(pkg) ?? [])];
   if (await d.cloudflare.getWorkerTag(d.accountId, workerName)) {
     warnings.push(
       `A Worker called ${workerName} already exists on this Cloudflare account. Deploying will replace its code and secrets. Choose another name to keep it.`,

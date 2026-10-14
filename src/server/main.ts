@@ -76,7 +76,7 @@ const app = createApp({
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: PORT }, () => {
   const url = `${ORIGIN}/?t=${launchToken}`;
   console.log(`Switchyard is running at ${url}`);
-  if (!process.env.SWITCHYARD_NO_OPEN) void open(url);
+  if (!process.env.SWITCHYARD_NO_OPEN) open(url).catch(() => {});
 });
 server.on("error", (e) => {
   console.error(describeListenError(e as NodeJS.ErrnoException, PORT));

@@ -46,6 +46,31 @@ describe("deployStep", () => {
     expect(cloudflare.getWorkerTag).toHaveBeenCalledWith("acc", "shop");
   });
 
+  it("passes the production build variables to the deploy, with CI and the Cloudflare credentials still winning", async () => {
+    const { plan: vars, values: varValues } = buildEnvPlan(
+      [
+        { id: "a", key: "NEXT_PUBLIC_API", value: "https://api.example.com", type: "plain", target: ["production"] },
+        { id: "b", key: "CLOUDFLARE_API_TOKEN", value: "from-vercel", type: "plain", target: ["production"] },
+      ],
+      [],
+    );
+    const { run, calls } = fakeRunner();
+    const cloudflare = { getWorkerTag: async () => "tag-1" } as unknown as CloudflareClient;
+    const { ctx } = makeContext({
+      plan: { env: vars },
+      values: varValues,
+      deps: { run, cloudflare },
+      outputs: { convert: { projectDir: "/w" } },
+    });
+    await deployStep.run(ctx);
+    expect(calls[0]?.opts?.env).toEqual({
+      NEXT_PUBLIC_API: "https://api.example.com",
+      CI: "1",
+      CLOUDFLARE_API_TOKEN: "cf-token",
+      CLOUDFLARE_ACCOUNT_ID: "acc",
+    });
+  });
+
   it("removes the secrets file even when the deploy fails", async () => {
     const workDir = await makeTempDir();
     let secretsPath = "";

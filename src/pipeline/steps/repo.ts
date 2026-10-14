@@ -10,7 +10,7 @@ import { runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
 import type { Step } from "../types.ts";
-import { git, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
+import { git, productionBuildEnv, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
 
 export const cloneStep: Step = {
   id: "clone",
@@ -111,6 +111,6 @@ export const buildStep: Step = {
   async run(ctx) {
     const dir = requireOutput(ctx, "convert", "projectDir");
     const { cmd, args } = execCommand(ctx.job.plan.packageManager, "cf", ["build"]);
-    await runOrThrow(ctx.deps.run, cmd, args, { cwd: dir, onLine: ctx.log, env: { CI: "1" } });
+    await runOrThrow(ctx.deps.run, cmd, args, { cwd: dir, onLine: ctx.log, env: { ...productionBuildEnv(ctx), CI: "1" } });
   },
 };

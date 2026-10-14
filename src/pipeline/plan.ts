@@ -32,6 +32,7 @@ export interface MigrationPlan {
   features: FeatureFinding[];
   domains: DomainPlan[];
   blockers: string[];
+  warnings: string[];
 }
 
 export interface PlanDeps {
@@ -113,11 +114,19 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   const env = buildEnvPlan(envVars, adapter?.reservedBindings ?? []);
   const dependencies = allDependencies(pkg);
 
+  const workerName = sanitizeWorkerName(project.name);
+  const warnings: string[] = [];
+  if (await d.cloudflare.getWorkerTag(d.accountId, workerName)) {
+    warnings.push(
+      `A Worker called ${workerName} already exists on this Cloudflare account. Deploying will replace its code and secrets. Choose another name to keep it.`,
+    );
+  }
+
   return {
     plan: {
       projectId: project.id,
       projectName: project.name,
-      workerName: sanitizeWorkerName(project.name),
+      workerName,
       repo,
       packageManager: detectPackageManager(files, pkg),
       adapterId: adapter?.id ?? null,
@@ -129,6 +138,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       features: detectVercelFeatures(dependencies),
       domains: planDomains(domains, zones),
       blockers,
+      warnings,
     },
     values: env.values,
   };

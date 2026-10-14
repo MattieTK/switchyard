@@ -15,4 +15,5 @@ export const samplePlan: MigrationPlan = {
   features: [],
   domains: [],
   blockers: [],
+  warnings: [],
 };

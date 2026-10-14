@@ -13,7 +13,7 @@ const project: VercelProject = {
   link: { type: "github", org: "acme", repo: "shop", repoId: 2, productionBranch: "main" },
 };
 
-function deps(over: { project?: VercelProject; github?: Partial<GitHubClient> } = {}) {
+function deps(over: { project?: VercelProject; github?: Partial<GitHubClient>; existingWorkers?: string[] } = {}) {
   const files: Record<string, string> = {
     "apps/web/package.json": JSON.stringify({ dependencies: { next: "16", "@vercel/blob": "1" } }),
     "apps/web/vercel.json": JSON.stringify({ crons: [{ path: "/api/cron", schedule: "0 * * * *" }] }),
@@ -35,6 +35,7 @@ function deps(over: { project?: VercelProject; github?: Partial<GitHubClient> } 
   } as unknown as GitHubClient;
   const cloudflare = {
     listZones: async () => [{ id: "z", name: "example.com" }],
+    getWorkerTag: async (_account: string, name: string) => (over.existingWorkers?.includes(name) ? "tag-1" : null),
   } as unknown as CloudflareClient;
   return { vercel, github, cloudflare, accountId: "acc" };
 }
@@ -61,6 +62,20 @@ describe("buildPlan", () => {
     ]);
     expect(values.e1).toBe("secret-1");
     expect(JSON.stringify(plan)).not.toContain("secret-1");
+  });
+
+  it("adds no warning when no Worker has the planned name", async () => {
+    const { plan } = await buildPlan(deps(), "prj_1");
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("warns when a Worker with the planned name already exists on the account", async () => {
+    const { plan } = await buildPlan(deps({ existingWorkers: ["my-shop"] }), "prj_1");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain("my-shop");
+    expect(plan.warnings[0]).toContain("replace its code and secrets");
+    expect(plan.warnings[0]).toContain("Choose another name");
   });
 
   it("blocks projects without a Git link or on another provider", async () => {

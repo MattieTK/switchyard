@@ -90,6 +90,15 @@ describe("createJsonClient", () => {
     expect(await c.request("/x", { method: "DELETE" })).toBeUndefined();
   });
 
+  it("reports a non-JSON success body as an ApiError", async () => {
+    const { c } = client([new Response("<html>oops</html>", { status: 200 })]);
+    const err = await c.request("/x").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(200);
+    expect((err as ApiError).message).toContain("not valid JSON");
+    expect(isAuthError(err)).toBe(false);
+  });
+
   it("falls back to the status text when the error body is not JSON", async () => {
     const { c } = client([new Response("<html>oops</html>", { status: 400, statusText: "Bad Request" })]);
     await expect(c.request("/x")).rejects.toThrow("cloudflare API error 400: Bad Request");

@@ -9,6 +9,7 @@ describe("resolvePaths", () => {
     expect(p.credentialsFile).toBe("/home/u/.config/switchyard/credentials.json");
     expect(p.jobsDir).toBe("/home/u/.config/switchyard/jobs");
     expect(p.workDir).toBe("/home/u/.cache/switchyard/work");
+    expect(p.binDir).toBe("/home/u/.cache/switchyard/bin");
   });
 
   it("respects XDG variables", () => {

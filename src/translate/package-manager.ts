@@ -38,8 +38,10 @@ export function dlxCommand(pm: PackageManager, pkg: string, args: readonly strin
   switch (pm) {
     case "pnpm":
       return { cmd: "pnpm", args: ["dlx", pkg, ...args] };
+    // Yarn 1 has no dlx. npx works whichever Yarn the project uses, and tools like
+    // vinext still pick Yarn for installs from the lockfile.
     case "yarn":
-      return { cmd: "yarn", args: ["dlx", pkg, ...args] };
+      return { cmd: "npx", args: ["--yes", pkg, ...args] };
     case "bun":
       return { cmd: "bunx", args: [pkg, ...args] };
     case "npm":

@@ -44,6 +44,8 @@ describe("package manager", () => {
     expect(execString("yarn", "cf deploy --prebuilt")).toBe("yarn cf deploy --prebuilt");
     expect(dlxCommand("pnpm", "vinext@1.1.0", ["init"])).toEqual({ cmd: "pnpm", args: ["dlx", "vinext@1.1.0", "init"] });
     expect(dlxCommand("npm", "vinext@1.1.0", ["init"])).toEqual({ cmd: "npx", args: ["--yes", "vinext@1.1.0", "init"] });
+    // Yarn 1 has no dlx, and npx works whichever Yarn the project uses.
+    expect(dlxCommand("yarn", "vinext@1.1.0", ["init"])).toEqual({ cmd: "npx", args: ["--yes", "vinext@1.1.0", "init"] });
     expect(dlxCommand("bun", "vinext@1.1.0", ["init"])).toEqual({ cmd: "bunx", args: ["vinext@1.1.0", "init"] });
   });
 });

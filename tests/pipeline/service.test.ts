@@ -84,6 +84,29 @@ describe("createJobService", () => {
     await expect(service.start(input)).rejects.toThrow("Build the plan");
   });
 
+  it("lets only one of two overlapping approvals create a job", async () => {
+    const { service, queue } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    const approve = { ...input, skip: ["s", "t"] };
+    const results = await Promise.allSettled([service.start(approve), service.start(approve)]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toBeInstanceOf(UserInputError);
+    expect(rejected[0]?.reason).toMatchObject({ status: 409 });
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the approved plan when a start fails, so a corrected start can succeed", async () => {
+    const { service, queue } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    await expect(service.start(input)).rejects.toThrow("SENSITIVE, OTHER_SENSITIVE");
+    const job = await service.start({ ...input, values: { s: "typed", t: "typed" } });
+    expect(job.plan.workerName).toBe("shop");
+    expect(queue.enqueue).toHaveBeenCalledWith(job.id);
+  });
+
   it("retries only failed or paused jobs", async () => {
     const { service, store, queue } = await setup({ accountId: "acc" });
     const job = await store.create(plan, "acc", {});

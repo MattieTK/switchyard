@@ -108,4 +108,34 @@ describe("job routes", () => {
     expect(second).toContain('"line":"hello"');
     await reader.cancel();
   });
+
+  it("delivers events emitted while the snapshot is being read", async () => {
+    let listener: ((e: JobEvent) => void) | undefined;
+    const jobs = {
+      get: async () => {
+        listener?.({ type: "log", jobId: job.id, step: "clone", line: "early" });
+        return job;
+      },
+      subscribe: (_id: string, fn: (e: JobEvent) => void) => {
+        listener = fn;
+        return () => {
+          listener = undefined;
+        };
+      },
+    } as unknown as JobService;
+    const { req } = await makeApp({ jobs });
+    const res = await req(`/api/jobs/${job.id}/events`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    while (!text.includes("event: log")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value);
+    }
+    expect(text.indexOf("event: job")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("event: job")).toBeLessThan(text.indexOf("event: log"));
+    expect(text).toContain('"line":"early"');
+    await reader.cancel();
+  }, 5000);
 });

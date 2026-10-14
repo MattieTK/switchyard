@@ -49,4 +49,28 @@ describe("translateVercelJson", () => {
       "`somethingNew` in vercel.json isn't translated.",
     ]);
   });
+
+  it.each([
+    ["null", "null"],
+    ["an array", "[1]"],
+    ["a string", '"abc"'],
+    ["a number", "5"],
+  ])("reports valid JSON that is %s, not an object, without throwing", (_label, raw) => {
+    expect(translateVercelJson(raw)).toEqual({
+      crons: [],
+      manual: ["vercel.json isn't a JSON object, so nothing in it was translated."],
+    });
+  });
+
+  it("reports a null cron entry as invalid without throwing", () => {
+    const t = translateVercelJson(JSON.stringify({ crons: [null] }));
+    expect(t.crons).toEqual([]);
+    expect(t.manual).toEqual(["Cron job null in vercel.json isn't valid, so it wasn't translated."]);
+  });
+
+  it("does not read inherited object properties as settings", () => {
+    const t = translateVercelJson('{"constructor":1,"__proto__":1}');
+    expect(t.manual).toEqual(["`constructor` in vercel.json isn't translated.", "`__proto__` in vercel.json isn't translated."]);
+    expect(t.manual.every((m) => typeof m === "string")).toBe(true);
+  });
 });

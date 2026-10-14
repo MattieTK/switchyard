@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { supportForFramework } from "../../adapters/registry.ts";
 import type { Support } from "../../adapters/types.ts";
+import type { JobEvent } from "../../pipeline/types.ts";
 import type { AppDeps } from "../app.ts";
 
 export interface ProjectSummary {
@@ -55,25 +56,43 @@ export function jobRoutes(d: AppDeps): Hono {
   r.get("/jobs/:id/events", (c) => {
     const id = c.req.param("id");
     return streamSSE(c, async (stream) => {
-      const job = await d.jobs.get(id);
-      if (!job) {
-        await stream.writeSSE({ event: "error", data: "That job doesn't exist." });
-        return;
-      }
-      await stream.writeSSE({ event: "job", data: JSON.stringify(job) });
-      const unsubscribe = d.jobs.subscribe(id, (e) => {
-        void stream.writeSSE(
-          e.type === "job"
-            ? { event: "job", data: JSON.stringify(e.job) }
-            : { event: "log", data: JSON.stringify({ step: e.step, line: e.line }) },
-        );
+      const toSSE = (e: JobEvent) =>
+        e.type === "job"
+          ? { event: "job", data: JSON.stringify(e.job) }
+          : { event: "log", data: JSON.stringify({ step: e.step, line: e.line }) };
+
+      // Subscribe before reading the snapshot so no event falls in the gap.
+      // Events that arrive until the snapshot is written are held in order.
+      let pending: JobEvent[] | null = [];
+      const release = d.jobs.subscribe(id, (e) => {
+        if (pending) pending.push(e);
+        else void stream.writeSSE(toSSE(e));
       });
+      // Abort and the finally block can both run; release only once, because
+      // a second call to the event bus's unsubscribe can drop a newer listener set.
+      let released = false;
+      const unsubscribe = () => {
+        if (released) return;
+        released = true;
+        release();
+      };
       stream.onAbort(unsubscribe);
-      while (!stream.aborted && !stream.closed) {
-        await stream.sleep(15_000);
-        await stream.writeSSE({ event: "ping", data: "" });
+      try {
+        const job = await d.jobs.get(id);
+        if (!job) {
+          await stream.writeSSE({ event: "error", data: "That job doesn't exist." });
+          return;
+        }
+        await stream.writeSSE({ event: "job", data: JSON.stringify(job) });
+        while (pending.length > 0) await stream.writeSSE(toSSE(pending.shift()!));
+        pending = null;
+        while (!stream.aborted && !stream.closed) {
+          await stream.sleep(15_000);
+          await stream.writeSSE({ event: "ping", data: "" });
+        }
+      } finally {
+        unsubscribe();
       }
-      unsubscribe();
     });
   });
 

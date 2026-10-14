@@ -13,6 +13,12 @@ describe("package.json", () => {
     expect(parsePackageJson("[]")).toBeNull();
   });
 
+  it("drops fields with unexpected types", () => {
+    expect(parsePackageJson('{"packageManager":123,"dependencies":"x","devDependencies":{"a":"1","b":2}}')).toEqual({
+      devDependencies: { a: "1" },
+    });
+  });
+
   it("merges dependencies and devDependencies", () => {
     expect(allDependencies({ dependencies: { a: "1" }, devDependencies: { b: "2" } })).toEqual({ a: "1", b: "2" });
     expect(allDependencies(null)).toEqual({});
@@ -26,6 +32,10 @@ describe("package manager", () => {
     expect(detectPackageManager(["yarn.lock"], {})).toBe("yarn");
     expect(detectPackageManager(["bun.lock"], {})).toBe("bun");
     expect(detectPackageManager([], null)).toBe("npm");
+  });
+
+  it("ignores a non-string packageManager field", () => {
+    expect(detectPackageManager(["pnpm-lock.yaml"], parsePackageJson('{"packageManager":123}'))).toBe("pnpm");
   });
 
   it("builds exec and dlx commands", () => {

@@ -10,6 +10,7 @@ import { UserInputError } from "../errors.ts";
 import { ApiError, type FetchFn } from "../http.ts";
 import type { JobService } from "../pipeline/service.ts";
 import { hostGuard, tokenGuard } from "./guard.ts";
+import { connectRoutes } from "./routes/connect.ts";
 import { jobRoutes } from "./routes/jobs.ts";
 
 export interface AppDeps {
@@ -27,6 +28,7 @@ export function createApp(d: AppDeps): Hono {
   const app = new Hono();
   app.use("*", hostGuard(d.port));
   app.use("/api/*", tokenGuard(d.launchToken));
+  app.route("/", connectRoutes(d));
   app.route("/api", jobRoutes(d));
 
   if (d.staticDir) {

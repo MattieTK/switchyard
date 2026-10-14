@@ -41,5 +41,7 @@ export interface Adapter {
   // Binding names the converter creates, which env vars must not reuse.
   reservedBindings: readonly string[];
   matches(input: DetectInput): boolean;
+  // Things the user should know before approving, shown with the plan.
+  planWarnings?(packageJson: PackageJson | null): string[];
   convert(ctx: ConvertContext): Promise<ConvertResult>;
 }

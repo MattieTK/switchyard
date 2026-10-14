@@ -60,6 +60,14 @@ describe("createCommandRunner", () => {
     );
   });
 
+  it("puts a per-run path prefix before the runner's own", async () => {
+    const prefixed = createCommandRunner({ pathPrefix: "/sy/bin" });
+    const r = await prefixed(node, ["-e", "console.log(process.env.PATH.split(require('path').delimiter).slice(0, 2).join(' '))"], {
+      pathPrefix: "/run/bin",
+    });
+    expect(r.stdout.trim()).toBe("/run/bin /sy/bin");
+  });
+
   it("puts the path prefix first on PATH", async () => {
     const prefixed = createCommandRunner({ pathPrefix: "/sy/bin" });
     const r = await prefixed(node, ["-e", "console.log(process.env.PATH.split(require('path').delimiter)[0])"]);

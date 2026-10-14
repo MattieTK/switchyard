@@ -1,6 +1,10 @@
 // Pinned vinext release used for Next.js conversions.
 export const VINEXT_VERSION = "1.1.0";
 
+// Next.js release older apps are upgraded to before conversion, since vinext targets Next.js 16.
+// The same version of @next/codemod runs the upgrade.
+export const NEXT_UPGRADE_VERSION = "16.4.1";
+
 // Branch Switchyard pushes conversion changes to. It must never be a production branch.
 export const MIGRATION_BRANCH = "cloudflare-migration";
 

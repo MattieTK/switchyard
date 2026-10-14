@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { detectVercelFeatures } from "../../src/translate/features.ts";
 import { allDependencies, parsePackageJson } from "../../src/translate/package-json.ts";
-import { detectPackageManager, dlxCommand, execCommand, execString } from "../../src/translate/package-manager.ts";
+import { detectPackageManager, dlxCommand, execCommand, execString, installCommand } from "../../src/translate/package-manager.ts";
 import { detectStorage } from "../../src/translate/storage.ts";
 import { inferTokenScope } from "../../src/translate/token-scope.ts";
 
@@ -36,6 +36,13 @@ describe("package manager", () => {
 
   it("ignores a non-string packageManager field", () => {
     expect(detectPackageManager(["pnpm-lock.yaml"], parsePackageJson('{"packageManager":123}'))).toBe("pnpm");
+  });
+
+  it("builds install commands", () => {
+    expect(installCommand("npm")).toEqual({ cmd: "npm", args: ["install"] });
+    expect(installCommand("pnpm")).toEqual({ cmd: "pnpm", args: ["install"] });
+    expect(installCommand("yarn")).toEqual({ cmd: "yarn", args: ["install"] });
+    expect(installCommand("bun")).toEqual({ cmd: "bun", args: ["install"] });
   });
 
   it("builds exec and dlx commands", () => {

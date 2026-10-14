@@ -6,6 +6,8 @@ import { StringDecoder } from "node:string_decoder";
 export interface RunOptions {
   cwd?: string;
   env?: Record<string, string>;
+  // Goes first on PATH for this run only, before the runner's own prefix.
+  pathPrefix?: string;
   onLine?: (line: string) => void;
   timeoutMs?: number;
 }
@@ -46,7 +48,14 @@ export function createCommandRunner(options: { pathPrefix?: string } = {}): Comm
     new Promise((resolve, reject) => {
       const child = spawn(cmd, args, {
         cwd: opts.cwd,
-        env: { ...process.env, PATH, ...COREPACK_ENV, FORCE_COLOR: "0", NO_COLOR: "1", ...opts.env },
+        env: {
+          ...process.env,
+          PATH: opts.pathPrefix ? [opts.pathPrefix, PATH].filter(Boolean).join(delimiter) : PATH,
+          ...COREPACK_ENV,
+          FORCE_COLOR: "0",
+          NO_COLOR: "1",
+          ...opts.env,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";

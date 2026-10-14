@@ -1,6 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createJobStore } from "../../src/pipeline/job-store.ts";
 import { samplePlan } from "../helpers/sample-plan.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
@@ -31,6 +31,22 @@ describe("createJobStore", () => {
   it("rejects ids that aren't UUIDs, so API input can't reach other paths", async () => {
     const store = createJobStore(await makeTempDir());
     expect(await store.get("../credentials")).toBeNull();
+  });
+
+  it("skips a corrupt job file with a warning instead of failing", async () => {
+    const dir = await makeTempDir();
+    const store = createJobStore(dir);
+    const good = await store.create(samplePlan, "acc", {});
+    const badId = "11111111-1111-4111-8111-111111111111";
+    await writeFile(join(dir, `${badId}.json`), "{ not json");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await store.list()).map((j) => j.id)).toEqual([good.id]);
+      expect(await store.recoverInterrupted()).toEqual({ failed: [], queued: [good.id] });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${badId}.json`));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("lists jobs newest first", async () => {

@@ -5,6 +5,7 @@ import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, runOrThrow } from "../exec.ts";
 import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
 import { dlxCommand, installCommand, type PackageManager } from "../translate/package-manager.ts";
+import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
 import type { Adapter, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
@@ -139,7 +140,7 @@ export const nextjsAdapter: Adapter = {
       const install = installCommand(ctx.pm);
       await runOrThrow(ctx.run, install.cmd, install.args, { cwd: ctx.dir, onLine: ctx.log, env: npmEnv });
       const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, ["upgrade", NEXT_UPGRADE_VERSION, "--yes"]);
-      await withYarn1Wrapper(ctx.pm, ctx.run, ctx.dir, (pathPrefix) =>
+      const upgraded = await withYarn1Wrapper(ctx.pm, ctx.run, ctx.dir, (pathPrefix) =>
         runOrThrow(ctx.run, upgrade.cmd, upgrade.args, {
           cwd: ctx.dir,
           onLine: ctx.log,
@@ -151,6 +152,7 @@ export const nextjsAdapter: Adapter = {
       );
       warnings.push(
         `Switchyard upgraded Next.js from ${old.range} to ${NEXT_UPGRADE_VERSION} with the official Next.js codemods. The codemods don't cover every breaking change, so review the pull request and test the preview before switching traffic.`,
+        ...incompatibleDependencyWarnings(upgraded.output),
       );
     }
     const { cmd, args } = dlxCommand(ctx.pm, `vinext@${VINEXT_VERSION}`, [

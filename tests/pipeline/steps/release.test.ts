@@ -107,10 +107,57 @@ describe("pushStep", () => {
     }));
     const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: "/w" } } });
     await pushStep.run(ctx);
-    expect(calls.map((c) => c.args[0])).toEqual(["add", "status", "commit", "push"]);
-    expect(calls[3]?.args).toEqual(["push", "--force", "origin", "HEAD:refs/heads/cloudflare-migration"]);
-    expect(calls[3]?.opts?.env?.GIT_CONFIG_KEY_0).toBeDefined();
+    expect(calls.map((c) => c.args[0])).toEqual(["add", "status", "config", "-c", "push"]);
+    expect(calls[3]?.args).toContain("commit");
+    expect(calls[4]?.args).toEqual(["push", "--force", "origin", "HEAD:refs/heads/cloudflare-migration"]);
+    expect(calls[4]?.opts?.env?.GIT_CONFIG_KEY_0).toBeDefined();
     expect(ctx.outputs.branch).toBe("cloudflare-migration");
+  });
+
+  it("commits with --no-verify and no identity override when git already has an identity", async () => {
+    const { run, calls } = fakeRunner((_cmd, args) => {
+      if (args[0] === "status") return { code: 0, output: " M package.json\n" };
+      if (args[0] === "config") return { code: 0, output: "dev@example.com\n" };
+      return { code: 0, output: "" };
+    });
+    const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: "/w" } } });
+    await pushStep.run(ctx);
+    const commit = calls.find((c) => c.args.includes("commit"));
+    expect(calls.find((c) => c.args[0] === "config")).toMatchObject({
+      args: ["config", "user.email"],
+      opts: { cwd: "/w" },
+    });
+    expect(commit?.args[0]).toBe("commit");
+    expect(commit?.args).toContain("--no-verify");
+    expect(commit?.args).not.toContain("-c");
+  });
+
+  it("supplies a Switchyard identity only when the repository has none", async () => {
+    const { run, calls } = fakeRunner((_cmd, args) => {
+      if (args[0] === "status") return { code: 0, output: " M package.json\n" };
+      if (args[0] === "config") return { code: 1, output: "" };
+      return { code: 0, output: "" };
+    });
+    const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: "/w" } } });
+    await pushStep.run(ctx);
+    const commit = calls.find((c) => c.args.includes("commit"));
+    expect(commit?.args.slice(0, 5)).toEqual([
+      "-c",
+      "user.name=Switchyard",
+      "-c",
+      "user.email=switchyard@localhost",
+      "commit",
+    ]);
+    expect(commit?.args).toContain("--no-verify");
+  });
+
+  it("treats a blank git identity as missing", async () => {
+    const { run, calls } = fakeRunner((_cmd, args) =>
+      args[0] === "status" ? { code: 0, output: " M a\n" } : { code: 0, output: "\n" },
+    );
+    const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: "/w" } } });
+    await pushStep.run(ctx);
+    expect(calls.find((c) => c.args.includes("commit"))?.args).toContain("user.email=switchyard@localhost");
   });
 
   it("doesn't create an empty commit on a retry", async () => {

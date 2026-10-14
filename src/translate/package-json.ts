@@ -5,14 +5,36 @@ export interface PackageJson {
   devDependencies?: Record<string, string>;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Keeps only the entries whose values are strings, so a malformed version
+// can't leak into callers that expect Record<string, string>.
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+// Invalid fields are left out rather than rejecting the whole file, so one
+// odd field doesn't hide the rest of the project's metadata.
 export function parsePackageJson(text: string | null): PackageJson | null {
   if (text === null) return null;
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as PackageJson) : null;
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
+  if (!isPlainObject(parsed)) return null;
+  const dependencies = stringRecord(parsed.dependencies);
+  const devDependencies = stringRecord(parsed.devDependencies);
+  return {
+    ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
+    ...(typeof parsed.packageManager === "string" ? { packageManager: parsed.packageManager } : {}),
+    ...(dependencies ? { dependencies } : {}),
+    ...(devDependencies ? { devDependencies } : {}),
+  };
 }
 
 export function allDependencies(pkg: PackageJson | null): Record<string, string> {

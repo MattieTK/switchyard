@@ -83,16 +83,18 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
         job.status = "failed";
       }
       log(state.error ?? state.pause?.reason ?? "Stopped");
-      await publish();
+      // Publishing is the last await: once the state says failed or paused, a Retry may enqueue
+      // the job at any moment, and the queue drops it while this run is still in flight.
       await d.store.flush(jobId);
+      await publish();
       return job;
     }
   }
 
   job.status = "done";
   await d.store.deleteValues(jobId);
-  await publish();
   await d.store.flush(jobId);
+  await publish();
   return job;
 }
 

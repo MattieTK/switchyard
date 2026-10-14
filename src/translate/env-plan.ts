@@ -104,9 +104,28 @@ export function runtimeSecrets(plan: EnvPlan, values: EnvValues): Record<string,
   return Object.fromEntries(withValues(plan, values, "runtime-secret").map(({ entry, value }) => [entry.key, value]));
 }
 
+// dotenv only reads back exactly what each quoting style defines. Single and
+// backtick values are literal, but dotenv turns a raw CR into LF before it
+// parses, so a CR survives only inside double quotes. Double quotes expand a
+// backslash followed by n or r, and nothing can escape that, so such values
+// cannot be written there. Values that no style holds get a comment instead of
+// a line that would read back wrong.
+function dotenvLine(key: string, value: string): string {
+  if (!/['\r\n]/.test(value)) return `${key}='${value}'\n`;
+  if (!/[`\r]/.test(value)) return `${key}=\`${value}\`\n`;
+  if (!value.includes('"') && !/\\[nr]/.test(value)) {
+    return `${key}="${value.replace(/\n/g, "\\n").replace(/\r/g, "\\r")}"\n`;
+  }
+  const allQuotes = value.includes("'") && value.includes("`") && value.includes('"');
+  const reason = allQuotes
+    ? "the value contains every quote character dotenv supports"
+    : "no quoting style this file uses reads the value back exactly";
+  return `# ${key} not written: ${reason}\n`;
+}
+
 export function devVarsFile(plan: EnvPlan, values: EnvValues): string {
   return withValues(plan, values, "dev-vars")
-    .map(({ entry, value }) => `${entry.key}=${JSON.stringify(value)}\n`)
+    .map(({ entry, value }) => dotenvLine(entry.key, value))
     .join("");
 }
 

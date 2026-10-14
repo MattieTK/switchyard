@@ -60,7 +60,16 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
       const ids = (await readdir(dir))
         .filter((f) => f.endsWith(".json") && !f.endsWith(".values.json"))
         .map((f) => f.slice(0, -".json".length));
-      const jobs = (await Promise.all(ids.map((id) => store.get(id)))).filter((j): j is Job => j !== null);
+      // One unreadable file shouldn't hide every other job, or stop Switchyard from starting.
+      const read = await Promise.all(
+        ids.map((id) =>
+          store.get(id).catch((e: unknown) => {
+            console.warn(`Skipping the job file ${id}.json: ${e instanceof Error ? e.message : String(e)}`);
+            return null;
+          }),
+        ),
+      );
+      const jobs = read.filter((j): j is Job => j !== null);
       return jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     },
     async save(job) {

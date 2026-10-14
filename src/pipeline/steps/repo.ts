@@ -55,9 +55,10 @@ export const convertStep: Step = {
     const repo = requireRepo(plan);
     const repoDir = requireOutput(ctx, "clone", "dir");
     const local = git(ctx, repoDir);
-    // Start from a clean checkout every time, so a retry never edits twice.
+    // Retries start from a clean checkout including dependencies, so a retry never
+    // edits twice or reuses a node_modules left half-written by a failed install.
     await local(["reset", "--hard", `origin/${repo.productionBranch}`]);
-    await local(["clean", "-fdx", "-e", "node_modules"]);
+    await local(["clean", "-fdx"]);
 
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");
     if (!adapter) throw new Error(`There is no converter for ${plan.adapterId ?? "this framework"}.`);

@@ -8,7 +8,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "node src/server/main.ts",
+    "start": "vite build --logLevel warn && node src/server/main.ts",
     "dev": "node --watch src/server/main.ts",
     "build:web": "vite build",
     "dev:web": "vite build --watch",

@@ -33,11 +33,10 @@ Before anything changes, Switchyard shows a plan for each project. The plan cove
 
 ```bash
 pnpm install
-pnpm build:web
 pnpm start
 ```
 
-Switchyard opens `http://localhost:4417` in your browser. It listens on this machine only, and every page load needs the link printed in the terminal.
+`pnpm start` builds the web UI and then opens `http://localhost:4417` in your browser. It listens on this machine only, and every page load needs the link printed in the terminal.
 
 Credentials are stored in `~/.config/switchyard/credentials.json`, which only you can read. Working copies go in `~/.cache/switchyard/work`. Set `SWITCHYARD_HOME` to keep everything in one other folder instead.
 

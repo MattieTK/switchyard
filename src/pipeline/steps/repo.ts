@@ -95,9 +95,15 @@ export const convertStep: Step = {
     // The explicit chmod also tightens a .dev.vars that already existed with looser permissions.
     const devVars = devVarsFile(plan.env, ctx.values);
     if (devVars) {
-      const devVarsPath = join(dir, ".dev.vars");
-      await writeFile(devVarsPath, devVars, { mode: 0o600 });
-      await chmod(devVarsPath, 0o600);
+      // A tracked .dev.vars would have the development values committed with the migration.
+      const tracked = await ctx.deps.run("git", ["ls-files", "--", ".dev.vars"], { cwd: dir });
+      if (tracked.stdout.trim()) {
+        ctx.log("Warning: .dev.vars is tracked in git, so Switchyard didn't write development values to it.");
+      } else {
+        const devVarsPath = join(dir, ".dev.vars");
+        await writeFile(devVarsPath, devVars, { mode: 0o600 });
+        await chmod(devVarsPath, 0o600);
+      }
     }
 
     ctx.outputs.projectDir = dir;

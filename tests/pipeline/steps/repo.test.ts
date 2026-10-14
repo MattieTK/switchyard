@@ -87,7 +87,9 @@ describe("convertStep", () => {
     expect(calls.map((c) => c.args)).toEqual([
       ["reset", "--hard", "origin/main"],
       ["clean", "-fdx", "-e", "node_modules"],
+      ["ls-files", "--", ".dev.vars"],
     ]);
+    expect(calls[2]?.opts?.cwd).toBe(repoDir);
     const config = await readFile(join(repoDir, "cloudflare.config.ts"), "utf8");
     expect(config).toContain('name: "shop"');
     expect(config).toContain("API_KEY: bindings.secret()");
@@ -97,6 +99,33 @@ describe("convertStep", () => {
     expect((await stat(join(repoDir, ".dev.vars"))).mode & 0o777).toBe(0o600);
     expect(await readFile(join(repoDir, ".gitignore"), "utf8")).toContain(".dev.vars");
     expect(ctx.outputs).toEqual({ projectDir: repoDir, warnings: '["heads up"]' });
+  });
+
+  it("doesn't write development values to a .dev.vars that is tracked in git", async () => {
+    const repoDir = await makeTempDir();
+    await writeFile(join(repoDir, ".dev.vars"), "COMMITTED='original'\n");
+    const { run } = fakeRunner((_cmd, args) => ({ code: 0, output: args[0] === "ls-files" ? ".dev.vars\n" : "" }));
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { plan: env, values } = buildEnvPlan(
+      [{ id: "d", key: "LOCAL", value: "dev", type: "plain", target: ["development"] }],
+      [],
+    );
+    const { ctx, logs } = makeContext({
+      plan: { env },
+      values,
+      deps: { run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    expect(await readFile(join(repoDir, ".dev.vars"), "utf8")).toBe("COMMITTED='original'\n");
+    expect(logs).toContain(
+      "Warning: .dev.vars is tracked in git, so Switchyard didn't write development values to it.",
+    );
   });
 
   it("works inside the project's root directory", async () => {

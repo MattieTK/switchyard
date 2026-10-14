@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
 import type { VercelEnvVar } from "../../src/clients/vercel.ts";
 import {
@@ -120,8 +121,65 @@ describe("plan helpers", () => {
     expect(secretKeys(plan)).toEqual(["API_KEY", "NEXT_PUBLIC_URL", "SENSITIVE"]);
   });
 
-  it("writes development values as an escaped .dev.vars file", () => {
+  it("writes development values as a .dev.vars file dotenv reads back exactly", () => {
     const { plan, values } = buildEnvPlan(vars, RESERVED);
-    expect(devVarsFile(plan, values)).toBe('LOCAL="a \\"quoted\\"\\nvalue"\n');
+    expect(dotenv.parse(devVarsFile(plan, values))).toEqual({ LOCAL: 'a "quoted"\nvalue' });
+  });
+});
+
+describe("devVarsFile", () => {
+  const readBack = (value: string) => {
+    const { plan, values } = buildEnvPlan(
+      [v({ id: "d", key: "LOCAL", type: "plain", target: ["development"], value })],
+      RESERVED,
+    );
+    return dotenv.parse(devVarsFile(plan, values)).LOCAL;
+  };
+
+  it("round-trips a value containing double quotes", () => {
+    expect(readBack('say "hi"')).toBe('say "hi"');
+  });
+
+  it("round-trips a Windows path without changing its backslashes", () => {
+    expect(readBack("C:\\Users\\tk\\new")).toBe("C:\\Users\\tk\\new");
+    expect(readBack("C:\\Users\\tk\\")).toBe("C:\\Users\\tk\\");
+  });
+
+  it("round-trips a multi-line value", () => {
+    expect(readBack("line one\nline two")).toBe("line one\nline two");
+  });
+
+  it("round-trips a value containing a single quote", () => {
+    expect(readBack("it's fine")).toBe("it's fine");
+  });
+
+  it("round-trips a plain value", () => {
+    expect(readBack("plain-value")).toBe("plain-value");
+  });
+
+  it("round-trips a value whose only line break is a carriage return", () => {
+    expect(readBack("first\rsecond")).toBe("first\rsecond");
+  });
+
+  it("writes a comment, not a line, for a value containing every quote character", () => {
+    const { plan, values } = buildEnvPlan(
+      [v({ id: "d", key: "LOCAL", type: "plain", target: ["development"], value: `it's \`x\` "y"` })],
+      RESERVED,
+    );
+    expect(devVarsFile(plan, values)).toBe(
+      "# LOCAL not written: the value contains every quote character dotenv supports\n",
+    );
+    expect(dotenv.parse(devVarsFile(plan, values))).toEqual({});
+  });
+
+  it("writes a comment for a value dotenv would read a line break from", () => {
+    const { plan, values } = buildEnvPlan(
+      [v({ id: "d", key: "LOCAL", type: "plain", target: ["development"], value: "it's `x`\\nb" })],
+      RESERVED,
+    );
+    expect(devVarsFile(plan, values)).toBe(
+      "# LOCAL not written: no quoting style this file uses reads the value back exactly\n",
+    );
+    expect(dotenv.parse(devVarsFile(plan, values))).toEqual({});
   });
 });

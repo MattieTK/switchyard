@@ -18,11 +18,13 @@ export const CLOUDFLARE_REDIRECT_URI = `${ORIGIN}/auth/cloudflare/callback`;
 // Public PKCE client "Switchyard (local)" on the maintainer's Cloudflare account (no secret).
 export const CLOUDFLARE_CLIENT_ID = "fd44d867323dfcafb07057f91e3730c1";
 
+// offline_access asks for a refresh token; without it the session ends after an hour.
 export const CLOUDFLARE_SCOPES = [
+  "offline_access",
   "user-details.read",
   "memberships.read",
   "account-settings.read",
-  "workers-scripts.edit",
+  "workers-scripts.write",
   "workers-ci.write",
   "workers-kv-storage.write",
   "workers-r2.write",

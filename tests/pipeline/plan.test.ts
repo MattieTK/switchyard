@@ -13,7 +13,9 @@ const project: VercelProject = {
   link: { type: "github", org: "acme", repo: "shop", repoId: 2, productionBranch: "main" },
 };
 
-function deps(over: { project?: VercelProject; github?: Partial<GitHubClient>; existingWorkers?: string[] } = {}) {
+function deps(
+  over: { project?: VercelProject; github?: Partial<GitHubClient>; existingWorkers?: string[]; canDeploy?: boolean } = {},
+) {
   const files: Record<string, string> = {
     "apps/web/package.json": JSON.stringify({ dependencies: { next: "16", "@vercel/blob": "1" } }),
     "apps/web/vercel.json": JSON.stringify({ crons: [{ path: "/api/cron", schedule: "0 * * * *" }] }),
@@ -35,6 +37,7 @@ function deps(over: { project?: VercelProject; github?: Partial<GitHubClient>; e
   } as unknown as GitHubClient;
   const cloudflare = {
     listZones: async () => [{ id: "z", name: "example.com" }],
+    listAccounts: async () => [{ id: "acc", name: "Shared", canDeployWorkers: over.canDeploy ?? true }],
     getWorkerTag: async (_account: string, name: string) => (over.existingWorkers?.includes(name) ? "tag-1" : null),
   } as unknown as CloudflareClient;
   return { vercel, github, cloudflare, accountId: "acc" };
@@ -85,6 +88,13 @@ describe("buildPlan", () => {
     );
     expect(plan.blockers).toEqual([]);
     expect(plan.warnings).toEqual([expect.stringContaining("This app uses Next.js 13.")]);
+  });
+
+  it("blocks when the user can't deploy Workers on the chosen account", async () => {
+    const { plan } = await buildPlan(deps({ canDeploy: false }), "prj_1");
+    expect(plan.blockers).toEqual([
+      "Your Cloudflare user can only read Workers on Shared, so Switchyard can't deploy there. Ask an administrator of that account for a role that can edit Workers, or choose another account on the Connect page.",
+    ]);
   });
 
   it("blocks projects without a Git link or on another provider", async () => {

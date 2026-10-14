@@ -3,6 +3,19 @@ import { createJsonClient, type FetchFn } from "../http.ts";
 export interface CloudflareAccount {
   id: string;
   name: string;
+  // False when the user's role on the account only lets them read Workers.
+  canDeployWorkers: boolean;
+}
+
+interface Membership {
+  status: string;
+  account: { id: string; name: string };
+  permissions?: { worker?: { edit?: boolean } };
+}
+
+// Shown wherever a read-only account would stop a migration.
+export function readOnlyAccountMessage(accountName: string): string {
+  return `Your Cloudflare user can only read Workers on ${accountName}, so Switchyard can't deploy there. Ask an administrator of that account for a role that can edit Workers, or choose another account`;
 }
 
 export interface CloudflareZone {
@@ -102,7 +115,17 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
 
   return {
     getUser: () => call<{ id: string; email: string }>("/user"),
-    listAccounts: () => paged<CloudflareAccount>("/accounts"),
+    // Memberships rather than /accounts, because they carry the user's permissions on each account.
+    async listAccounts() {
+      const memberships = await paged<Membership>("/memberships");
+      return memberships
+        .filter((m) => m.status === "accepted")
+        .map((m) => ({
+          id: m.account.id,
+          name: m.account.name,
+          canDeployWorkers: m.permissions?.worker?.edit !== false,
+        }));
+    },
     listZones: (accountId) => paged<CloudflareZone>("/zones", { "account.id": accountId }),
     async getWorkerTag(accountId, scriptName) {
       const scripts = await call<{ id: string; tag?: string }[]>(`${acct(accountId)}/workers/scripts`);

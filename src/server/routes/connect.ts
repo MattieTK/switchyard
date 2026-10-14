@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { buildAuthorizeUrl, exchangeCode } from "../../auth/cloudflare-oauth.ts";
-import { createCloudflareClient, type CloudflareAccount } from "../../clients/cloudflare.ts";
+import { createCloudflareClient, readOnlyAccountMessage, type CloudflareAccount } from "../../clients/cloudflare.ts";
 import { createGitHubClient } from "../../clients/github.ts";
 import { createVercelClient, probeVercelToken, type ScopeProbe, type VercelTeam } from "../../clients/vercel.ts";
 import { UserInputError } from "../../errors.ts";
@@ -171,7 +171,9 @@ export function connectRoutes(d: AppDeps): Hono {
       const cf = createCloudflareClient({ fetch: d.fetch, token: async () => tokens.accessToken });
       const user = await cf.getUser();
       const accounts = await cf.listAccounts();
-      const only = accounts.length === 1 ? accounts[0] : undefined;
+      // Pick an account only when exactly one can take a deploy.
+      const deployable = accounts.filter((a) => a.canDeployWorkers);
+      const only = deployable.length === 1 ? deployable[0] : undefined;
       await d.store.update((cr) => ({
         ...cr,
         cloudflare: {
@@ -190,6 +192,7 @@ export function connectRoutes(d: AppDeps): Hono {
     const { accountId } = z.object({ accountId: z.string().min(1) }).parse(await c.req.json());
     const account = (await d.clients.cloudflare.listAccounts()).find((a) => a.id === accountId);
     if (!account) throw new UserInputError("You don't have access to that Cloudflare account.");
+    if (!account.canDeployWorkers) throw new UserInputError(`${readOnlyAccountMessage(account.name)}.`);
     await d.store.update((cr) => {
       if (!cr.cloudflare) throw new UserInputError("Log in with Cloudflare first.");
       return { ...cr, cloudflare: { ...cr.cloudflare, accountId: account.id, accountName: account.name } };

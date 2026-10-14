@@ -121,7 +121,7 @@ describe("Cloudflare OAuth", () => {
     const f = fakeFetch([
       json({ access_token: "at", refresh_token: "rt", expires_in: 3600 }),
       cfOk({ id: "u", email: "me@example.com" }),
-      cfOk([{ id: "acc1", name: "Main" }]),
+      cfOk([{ status: "accepted", account: { id: "acc1", name: "Main" }, permissions: { worker: { read: true, edit: true } } }]),
     ]);
     const { req, store, deps } = await makeApp({ fetch: f.fetch });
     const { state } = deps.oauth.pending.create();
@@ -134,6 +134,32 @@ describe("Cloudflare OAuth", () => {
       accountId: "acc1",
       accountName: "Main",
     });
+  });
+
+  it("doesn't pick the only account when the user can't deploy Workers there", async () => {
+    const f = fakeFetch([
+      json({ access_token: "at", refresh_token: "rt", expires_in: 3600 }),
+      cfOk({ id: "u", email: "me@example.com" }),
+      cfOk([{ status: "accepted", account: { id: "acc1", name: "Main" }, permissions: { worker: { read: true, edit: false } } }]),
+    ]);
+    const { req, store, deps } = await makeApp({ fetch: f.fetch });
+    const { state } = deps.oauth.pending.create();
+    await req(`/auth/cloudflare/callback?code=abc&state=${state}`, { headers: { "x-switchyard-token": "" } });
+    expect((await store.read()).cloudflare?.accountId).toBeUndefined();
+  });
+
+  it("refuses an account where the user can only read Workers", async () => {
+    const clients = {
+      cloudflare: { listAccounts: async () => [{ id: "ro", name: "Shared", canDeployWorkers: false }] },
+    } as unknown as ClientFactory;
+    const { req, store } = await makeApp({ clients });
+    await store.update(() => ({ cloudflare: { accessToken: "x", expiresAt: 0 } }));
+    const res = await req("/api/cloudflare/account", { method: "POST", json: { accountId: "ro" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "Your Cloudflare user can only read Workers on Shared, so Switchyard can't deploy there. Ask an administrator of that account for a role that can edit Workers, or choose another account.",
+    );
+    expect((await store.read()).cloudflare?.accountId).toBeUndefined();
   });
 
   it("reports an OAuth error returned by Cloudflare when the state is valid", async () => {

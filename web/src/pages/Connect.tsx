@@ -83,8 +83,9 @@ export function Connect() {
   if (!status) {
     return <main>{error ? <Callout tone="error">{error}</Callout> : <Loading>Checking your connections…</Loading>}</main>;
   }
-  const ready =
-    status.vercel.connected && status.cloudflare.connected && Boolean(status.cloudflare.accountId) && status.github.connected;
+  const cf = status.cloudflare;
+  const cloudflareReady = cf.connected && cf.accounts.some((a) => a.id === cf.accountId && a.canDeployWorkers);
+  const ready = status.vercel.connected && cloudflareReady && status.github.connected;
 
   return (
     <main>
@@ -249,6 +250,7 @@ function CloudflareCard({ status, onChange }: { status: ConnectionStatus["cloudf
     );
   }
 
+  const selected = status.accounts.find((a) => a.id === status.accountId);
   return (
     <Service logo="CF" name="Cloudflare" connected summary={`Logged in${status.email ? ` as ${status.email}` : ""}.`}>
       <SelectField
@@ -256,9 +258,20 @@ function CloudflareCard({ status, onChange }: { status: ConnectionStatus["cloudf
         value={status.accountId ?? null}
         placeholder="Choose an account"
         disabled={busy}
-        options={status.accounts.map((a) => ({ value: a.id, label: a.name }))}
+        options={status.accounts.map((a) => ({
+          value: a.id,
+          label: a.canDeployWorkers ? a.name : `${a.name} (read-only for Workers)`,
+          // The current choice stays selectable so the select can still show it.
+          disabled: !a.canDeployWorkers && a.id !== status.accountId,
+        }))}
         onChange={(v) => void run(() => api("/api/cloudflare/account", { method: "POST", body: { accountId: v } }))}
       />
+      {selected && !selected.canDeployWorkers && (
+        <Callout tone="warning">
+          You can only read Workers on {selected.name}, so Switchyard can't deploy there. Choose another account, or ask an
+          administrator of {selected.name} for a role that can edit Workers.
+        </Callout>
+      )}
       {error && <Callout tone="error">{error}</Callout>}
       <Button disabled={busy} onClick={() => void run(() => api("/api/cloudflare", { method: "DELETE" }))}>
         Disconnect

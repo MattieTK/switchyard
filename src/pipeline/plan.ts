@@ -1,6 +1,6 @@
 import { pickAdapter } from "../adapters/registry.ts";
 import type { NextCachePreset, Support } from "../adapters/types.ts";
-import type { CloudflareClient, CloudflareZone } from "../clients/cloudflare.ts";
+import { readOnlyAccountMessage, type CloudflareClient, type CloudflareZone } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
 import type { VercelClient, VercelDomain } from "../clients/vercel.ts";
 import { MIGRATION_BRANCH } from "../config.ts";
@@ -65,13 +65,18 @@ export function planDomains(domains: VercelDomain[], zones: CloudflareZone[]): D
 // Phase 1: read everything needed to show the plan. Nothing is written anywhere.
 export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan: MigrationPlan; values: EnvValues }> {
   const project = await d.vercel.getProject(projectId);
-  const [envVars, domains, zones] = await Promise.all([
+  const [envVars, domains, zones, accounts] = await Promise.all([
     d.vercel.listEnv(project.id),
     d.vercel.listDomains(project.id),
     d.cloudflare.listZones(d.accountId),
+    d.cloudflare.listAccounts(),
   ]);
   const rootDirectory = (project.rootDirectory ?? "").replace(/^\/+|\/+$/g, "");
   const blockers: string[] = [];
+  const account = accounts.find((a) => a.id === d.accountId);
+  if (account && !account.canDeployWorkers) {
+    blockers.push(`${readOnlyAccountMessage(account.name)} on the Connect page.`);
+  }
   let repo: MigrationPlan["repo"] = null;
   let pkg: PackageJson | null = null;
   let files: string[] = [];

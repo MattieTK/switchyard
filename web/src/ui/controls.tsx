@@ -93,6 +93,7 @@ export function TextField({
 export interface Option {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 export function SelectField({
@@ -132,7 +133,7 @@ export function SelectField({
             <Select.Popup className="select-popup">
               <Select.List>
                 {options.map((o) => (
-                  <Select.Item key={o.value} value={o.value} className="select-item">
+                  <Select.Item key={o.value} value={o.value} disabled={o.disabled} className="select-item">
                     <Select.ItemIndicator className="select-item-indicator">
                       <CheckIcon />
                     </Select.ItemIndicator>

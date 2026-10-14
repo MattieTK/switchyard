@@ -6,8 +6,8 @@ import {
   createPendingAuthStore,
   exchangeCode,
 } from "../../src/auth/cloudflare-oauth.ts";
-import { createCredentialStore } from "../../src/auth/store.ts";
-import { isAuthError } from "../../src/http.ts";
+import { type CredentialStore, createCredentialStore } from "../../src/auth/store.ts";
+import { type FetchFn, isAuthError } from "../../src/http.ts";
 import { fakeFetch, json } from "../helpers/fake-fetch.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
 
@@ -84,6 +84,60 @@ describe("createCloudflareTokenProvider", () => {
     const { provider, store } = await setup(0, [json({ access_token: "new", expires_in: 3600 })]);
     await provider();
     expect((await store.read()).cloudflare?.refreshToken).toBe("r1");
+  });
+
+  it("does not send a second refresh when a stale read races a completed refresh", async () => {
+    const dir = await makeTempDir();
+    const real = createCredentialStore(join(dir, "credentials.json"));
+    await real.update(() => ({ cloudflare: { accessToken: "old", refreshToken: "r1", expiresAt: 40_000 } }));
+    const stale = await real.read();
+    let staleReads = 0;
+    const store: CredentialStore = {
+      read: async () => {
+        if (staleReads > 0) {
+          staleReads -= 1;
+          return stale;
+        }
+        return real.read();
+      },
+      update: real.update,
+    };
+    const f = fakeFetch([json({ access_token: "new", refresh_token: "r2", expires_in: 3600 })]);
+    const provider = createCloudflareTokenProvider({ store, fetch: f.fetch, clientId: "cid", now: () => 10_000 });
+
+    expect(await provider()).toBe("new");
+    staleReads = 1;
+    expect(await provider()).toBe("new");
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it("joins a refresh that is already in flight", async () => {
+    const dir = await makeTempDir();
+    const store = createCredentialStore(join(dir, "credentials.json"));
+    await store.update(() => ({ cloudflare: { accessToken: "old", refreshToken: "r1", expiresAt: 40_000 } }));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markSent!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      markSent = resolve;
+    });
+    let tokenRequests = 0;
+    const fetch: FetchFn = async () => {
+      tokenRequests += 1;
+      markSent();
+      await gate;
+      return json({ access_token: "new", refresh_token: "r2", expires_in: 3600 });
+    };
+    const provider = createCloudflareTokenProvider({ store, fetch, clientId: "cid", now: () => 10_000 });
+
+    const first = provider();
+    await sent;
+    const second = provider();
+    release();
+    expect(await Promise.all([first, second])).toEqual(["new", "new"]);
+    expect(tokenRequests).toBe(1);
   });
 
   it("throws an auth error when Cloudflare is not connected", async () => {

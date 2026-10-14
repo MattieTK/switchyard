@@ -96,19 +96,27 @@ export function createCloudflareTokenProvider(o: {
   let refreshing: Promise<string> | null = null;
 
   return async () => {
+    if (refreshing) return refreshing;
     const { cloudflare } = await o.store.read();
     if (!cloudflare) throw new ApiError("cloudflare", 401, "Cloudflare is not connected", true);
     if (cloudflare.expiresAt - now() > 60_000) return cloudflare.accessToken;
-    const refreshToken = cloudflare.refreshToken;
-    if (!refreshToken) throw new ApiError("cloudflare", 401, "The Cloudflare session has expired", true);
 
     refreshing ??= (async () => {
       try {
+        // Re-read under the guard. The read above can predate a refresh that finished
+        // after it started, and reusing that refresh token could be rejected if
+        // Cloudflare rotates them.
+        const stored = (await o.store.read()).cloudflare;
+        if (!stored) throw new ApiError("cloudflare", 401, "Cloudflare is not connected", true);
+        if (stored.expiresAt - now() > 60_000) return stored.accessToken;
+        if (!stored.refreshToken) throw new ApiError("cloudflare", 401, "The Cloudflare session has expired", true);
+        const refreshToken = stored.refreshToken;
+
         const t = await refreshTokens(o.fetch, { clientId: o.clientId, refreshToken }, now());
         await o.store.update((c) => ({
           ...c,
           cloudflare: {
-            ...(c.cloudflare ?? cloudflare),
+            ...(c.cloudflare ?? stored),
             accessToken: t.accessToken,
             expiresAt: t.expiresAt,
             refreshToken: t.refreshToken ?? refreshToken,

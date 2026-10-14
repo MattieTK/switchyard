@@ -16,6 +16,12 @@ describe("createCommandRunner", () => {
     expect(lines).toEqual(expect.arrayContaining(["a", "b", "c"]));
   });
 
+  it("keeps stderr out of stdout", async () => {
+    const r = await run(node, ["-e", "console.log('out'); console.error('err')"]);
+    expect(r.stdout.trim()).toBe("out");
+    expect(r.output).toContain("err");
+  });
+
   it("returns the exit code without throwing", async () => {
     expect((await run(node, ["-e", "process.exit(3)"])).code).toBe(3);
   });

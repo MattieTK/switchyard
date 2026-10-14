@@ -6,8 +6,15 @@ export interface RunCall {
   opts: RunOptions | undefined;
 }
 
+// Handlers may omit stdout; it then defaults to output, which suits tests where only stdout is produced.
+export interface FakeResult {
+  code: number;
+  output: string;
+  stdout?: string;
+}
+
 export function fakeRunner(
-  handler: (cmd: string, args: readonly string[], opts?: RunOptions) => RunResult | Promise<RunResult> = () => ({
+  handler: (cmd: string, args: readonly string[], opts?: RunOptions) => FakeResult | Promise<FakeResult> = () => ({
     code: 0,
     output: "",
   }),
@@ -17,7 +24,7 @@ export function fakeRunner(
     calls.push({ cmd, args: [...args], opts });
     const result = await handler(cmd, args, opts);
     for (const line of result.output.split("\n")) if (line) opts?.onLine?.(line);
-    return result;
+    return { code: result.code, output: result.output, stdout: result.stdout ?? result.output };
   };
   return { run, calls };
 }

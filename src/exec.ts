@@ -11,7 +11,10 @@ export interface RunOptions {
 
 export interface RunResult {
   code: number;
+  // stdout and stderr interleaved in arrival order.
   output: string;
+  // stdout only.
+  stdout: string;
 }
 
 export type CommandRunner = (cmd: string, args: readonly string[], opts?: RunOptions) => Promise<RunResult>;
@@ -40,15 +43,17 @@ export function createCommandRunner(): CommandRunner {
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";
+      let stdout = "";
       const emit = (line: string) => opts.onLine?.(line.replace(ANSI, ""));
 
       // Each stream gets its own decoder and partial line, so output from
       // stdout and stderr never splices into the same line.
-      const attach = (stream: Readable): (() => void) => {
+      const attach = (stream: Readable, capture: (text: string) => void): (() => void) => {
         const decoder = new StringDecoder("utf8");
         let partial = "";
         const push = (text: string) => {
           output += text;
+          capture(text);
           const lines = (partial + text).split(/\r?\n/);
           partial = lines.pop() ?? "";
           for (const line of lines) emit(line);
@@ -59,7 +64,12 @@ export function createCommandRunner(): CommandRunner {
           if (partial) emit(partial);
         };
       };
-      const flushes = [attach(child.stdout), attach(child.stderr)];
+      const flushes = [
+        attach(child.stdout, (text) => {
+          stdout += text;
+        }),
+        attach(child.stderr, () => undefined),
+      ];
 
       const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : undefined;
       child.on("error", (err) => {
@@ -69,7 +79,11 @@ export function createCommandRunner(): CommandRunner {
       child.on("close", (code, signal) => {
         clearTimeout(timer);
         for (const flush of flushes) flush();
-        resolve({ code: code ?? (signal ? 128 : 1), output: output.replace(ANSI, "") });
+        resolve({
+          code: code ?? (signal ? 128 : 1),
+          output: output.replace(ANSI, ""),
+          stdout: stdout.replace(ANSI, ""),
+        });
       });
     });
 }

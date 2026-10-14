@@ -9,7 +9,7 @@ export interface GitHubAuth {
 export async function resolveGitHubAuth(run: CommandRunner, store: CredentialStore): Promise<GitHubAuth | null> {
   try {
     const r = await run("gh", ["auth", "token"]);
-    const token = r.output.trim();
+    const token = r.stdout.trim();
     if (r.code === 0 && token) return { token, source: "gh" };
   } catch {
     // gh is not installed; fall through to the stored PAT.

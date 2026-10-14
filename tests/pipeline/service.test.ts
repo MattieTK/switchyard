@@ -13,7 +13,7 @@ import { makeTempDir } from "../helpers/tmp.ts";
 
 const { plan: env, values } = buildEnvPlan(
   [
-    { id: "a", key: "API_KEY", value: "fetched", type: "encrypted", target: ["production"] },
+    { id: "a", key: "API_KEY", value: "fetched", type: "encrypted", decrypted: true, target: ["production"] },
     { id: "s", key: "SENSITIVE", type: "sensitive", target: ["production"] },
     { id: "t", key: "OTHER_SENSITIVE", type: "sensitive", target: ["production"] },
   ],

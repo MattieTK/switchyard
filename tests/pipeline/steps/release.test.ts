@@ -11,7 +11,7 @@ import { makeTempDir } from "../../helpers/tmp.ts";
 
 describe("deployStep", () => {
   const { plan: env, values } = buildEnvPlan(
-    [{ id: "p", key: "API_KEY", value: "prod-secret", type: "encrypted", target: ["production"] }],
+    [{ id: "p", key: "API_KEY", value: "prod-secret", type: "encrypted", decrypted: true, target: ["production"] }],
     [],
   );
 

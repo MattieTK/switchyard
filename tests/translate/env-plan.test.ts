@@ -17,6 +17,7 @@ const v = (over: Partial<VercelEnvVar>): VercelEnvVar => ({
   type: "encrypted",
   target: ["production"],
   value: "value",
+  decrypted: true,
   ...over,
 });
 
@@ -58,6 +59,22 @@ describe("buildEnvPlan", () => {
     const { plan } = buildEnvPlan([v({ id: "1", key: "E", type: "encrypted", value: undefined })], RESERVED);
     expect(plan.entries[0]?.needsInput).toBe(true);
     expect(plan.warnings[0]).toContain("E");
+  });
+
+  it("treats an encrypted variable that Vercel did not decrypt as needing input", () => {
+    const { plan, values } = buildEnvPlan(
+      [v({ id: "1", key: "E", value: "Y2lwaGVydGV4dA==", decrypted: false })],
+      RESERVED,
+    );
+    expect(plan.entries[0]).toMatchObject({ hasValue: false, needsInput: true });
+    expect(plan.warnings[0]).toContain("E");
+    expect(values).toEqual({});
+  });
+
+  it("uses a plain variable's value without a decrypted flag", () => {
+    const { plan, values } = buildEnvPlan([v({ id: "1", key: "P", type: "plain", value: "x", decrypted: undefined })], RESERVED);
+    expect(plan.entries[0]).toMatchObject({ hasValue: true, needsInput: false });
+    expect(values).toEqual({ "1": "x" });
   });
 
   it("skips system variables, branch-specific previews, reserved names and invalid names", () => {

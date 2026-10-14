@@ -15,11 +15,57 @@ describe("createVercelClient", () => {
     expect(f.calls[1]?.url).toBe("https://api.vercel.com/v9/projects?teamId=team_1&limit=100&until=1700");
   });
 
-  it("requests decrypted env vars", async () => {
-    const f = fakeFetch([json({ envs: [{ id: "e1", key: "A", value: "1", type: "plain", target: ["production"] }] })]);
-    const envs = await createVercelClient({ fetch: f.fetch, token: "t" }).listEnv("p 1");
-    expect(envs[0]?.key).toBe("A");
-    expect(f.calls[0]?.url).toBe("https://api.vercel.com/v10/projects/p%201/env?decrypt=true");
+  it("reads encrypted values from the per-variable endpoint, not the list", async () => {
+    const f = fakeFetch([
+      json({
+        envs: [
+          { id: "e1", key: "SECRET", value: "c2lwaGVydGV4dA==", decrypted: false, type: "encrypted", target: ["production"] },
+          { id: "e2", key: "PUBLIC", value: "https://x", type: "plain", target: ["production"] },
+          { id: "e3", key: "TOKEN", type: "sensitive", target: ["production"] },
+          { id: "e4", key: "VERCEL_URL", type: "system", target: ["production"] },
+        ],
+      }),
+      json({ id: "e1", key: "SECRET", value: "plaintext", decrypted: true, type: "encrypted", target: ["production"] }),
+    ]);
+    const envs = await createVercelClient({ fetch: f.fetch, token: "t", teamId: "team_1" }).listEnv("p 1");
+    expect(f.calls.map((c) => c.url)).toEqual([
+      "https://api.vercel.com/v10/projects/p%201/env?teamId=team_1",
+      "https://api.vercel.com/v1/projects/p%201/env/e1?teamId=team_1",
+    ]);
+    expect(envs.map((e) => [e.id, e.value])).toEqual([
+      ["e1", "plaintext"],
+      ["e2", "https://x"],
+      ["e3", undefined],
+      ["e4", undefined],
+    ]);
+    expect(envs[0]?.decrypted).toBe(true);
+  });
+
+  it("leaves the value unset when the per-variable endpoint does not decrypt it", async () => {
+    const f = fakeFetch([
+      json({ envs: [{ id: "e1", key: "SECRET", value: "cipher", decrypted: false, type: "encrypted", target: ["production"] }] }),
+      json({ id: "e1", key: "SECRET", value: "cipher", decrypted: false, type: "encrypted", target: ["production"] }),
+    ]);
+    const envs = await createVercelClient({ fetch: f.fetch, token: "t" }).listEnv("p1");
+    expect(envs[0]?.value).toBeUndefined();
+  });
+
+  it("fetches at most five variables at a time", async () => {
+    let active = 0;
+    let peak = 0;
+    const envs = Array.from({ length: 12 }, (_, i) => ({ id: `e${i}`, key: `K${i}`, type: "encrypted", target: ["production"] }));
+    const detail = async (url: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      const eid = url.split("/env/")[1]?.split("?")[0];
+      return json({ id: eid, key: "K", value: `v-${eid}`, decrypted: true, type: "encrypted", target: ["production"] });
+    };
+    const fetch = async (url: string) => (url.includes("/v10/") ? json({ envs }) : detail(url));
+    const out = await createVercelClient({ fetch, token: "t" }).listEnv("p1");
+    expect(out.map((e) => e.value)).toEqual(envs.map((e) => `v-${e.id}`));
+    expect(peak).toBe(5);
   });
 
   it("lists domains and gets one project", async () => {

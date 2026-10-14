@@ -33,8 +33,8 @@ function cloudflare(over: Partial<CloudflareClient> = {}) {
 
 const { plan: env, values } = buildEnvPlan(
   [
-    { id: "p", key: "API_KEY", value: "prod", type: "encrypted", target: ["production"] },
-    { id: "v", key: "API_KEY", value: "prev", type: "encrypted", target: ["preview"] },
+    { id: "p", key: "API_KEY", value: "prod", type: "encrypted", decrypted: true, target: ["production"] },
+    { id: "v", key: "API_KEY", value: "prev", type: "encrypted", decrypted: true, target: ["preview"] },
   ],
   [],
 );

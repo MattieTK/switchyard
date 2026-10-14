@@ -49,7 +49,8 @@ export function buildEnvPlan(vars: VercelEnvVar[], reserved: readonly string[]):
   const warnings: string[] = [];
   const entries = vars.map((v): EnvPlanEntry => {
     const skipReason = skipReasonFor(v, reserved);
-    const hasValue = typeof v.value === "string";
+    // Ciphertext arrives as a string too, so a value only counts when plain or confirmed decrypted.
+    const hasValue = typeof v.value === "string" && (v.type === "plain" || v.decrypted === true);
     if (hasValue && !skipReason) values[v.id] = v.value as string;
     const needsInput = !skipReason && !hasValue;
     if (needsInput && v.type !== "sensitive") {

@@ -26,6 +26,9 @@ export interface VercelEnvVar {
   id: string;
   key: string;
   value?: string;
+  // True only when `value` is plaintext. The list endpoint returns ciphertext
+  // for encrypted variables with this set to false.
+  decrypted?: boolean;
   type: "plain" | "encrypted" | "sensitive" | "secret" | "system";
   target: VercelTarget[];
   gitBranch?: string | null;
@@ -47,6 +50,22 @@ export interface VercelClient {
 }
 
 type Query = Record<string, string | number | undefined>;
+
+const ENV_FETCH_CONCURRENCY = 5;
+
+// Runs `fn` over `items` with at most `limit` calls in flight, keeping order.
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 export function createVercelClient(o: { fetch: FetchFn; token: string; teamId?: string }): VercelClient {
   const http = createJsonClient({
@@ -78,9 +97,21 @@ export function createVercelClient(o: { fetch: FetchFn; token: string; teamId?: 
       return all;
     },
     getProject: (p) => http.request<VercelProject>(`/v9/projects/${id(p)}`, { query: q() }),
-    listEnv: async (p) =>
-      (await http.request<{ envs: VercelEnvVar[] }>(`/v10/projects/${id(p)}/env`, { query: q({ decrypt: "true" }) }))
-        .envs,
+    // The list endpoint returns ciphertext for encrypted variables even with
+    // decrypt=true (verified 2026-10-14). Only the per-variable endpoint
+    // returns plaintext, flagged decrypted: true.
+    async listEnv(p) {
+      const { envs } = await http.request<{ envs: VercelEnvVar[] }>(`/v10/projects/${id(p)}/env`, { query: q() });
+      return mapLimit(envs, ENV_FETCH_CONCURRENCY, async (v): Promise<VercelEnvVar> => {
+        const { value: _value, decrypted: _decrypted, ...rest } = v;
+        if (v.type === "plain") return v;
+        if (v.type === "sensitive" || v.type === "system") return rest;
+        const one = await http.request<VercelEnvVar>(`/v1/projects/${id(p)}/env/${id(v.id)}`, { query: q() });
+        return one.decrypted === true && typeof one.value === "string"
+          ? { ...rest, value: one.value, decrypted: true }
+          : rest;
+      });
+    },
     listDomains: async (p) =>
       (await http.request<{ domains: VercelDomain[] }>(`/v9/projects/${id(p)}/domains`, { query: q() })).domains,
   };

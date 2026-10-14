@@ -70,7 +70,7 @@ describe("convertStep", () => {
     };
     const { plan: env, values } = buildEnvPlan(
       [
-        { id: "p", key: "API_KEY", value: "prod", type: "encrypted", target: ["production"] },
+        { id: "p", key: "API_KEY", value: "prod", type: "encrypted", decrypted: true, target: ["production"] },
         { id: "d", key: "LOCAL", value: "dev", type: "plain", target: ["development"] },
       ],
       ["ASSETS"],

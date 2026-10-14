@@ -21,9 +21,9 @@ function deps(over: { project?: VercelProject; github?: Partial<GitHubClient>; e
   const vercel = {
     getProject: async () => over.project ?? project,
     listEnv: async () => [
-      { id: "e1", key: "API_KEY", value: "secret-1", type: "encrypted", target: ["production"] },
+      { id: "e1", key: "API_KEY", value: "secret-1", type: "encrypted", decrypted: true, target: ["production"] },
       { id: "e2", key: "TOKEN", type: "sensitive", target: ["production"] },
-      { id: "e3", key: "BLOB_READ_WRITE_TOKEN", value: "b", type: "encrypted", target: ["production"] },
+      { id: "e3", key: "BLOB_READ_WRITE_TOKEN", value: "b", type: "encrypted", decrypted: true, target: ["production"] },
     ],
     listDomains: async () => [{ name: "shop.example.com" }, { name: "my-shop.vercel.app" }, { name: "other.io" }],
   } as unknown as VercelClient;

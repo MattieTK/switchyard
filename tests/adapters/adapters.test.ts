@@ -167,6 +167,21 @@ describe("nextjsAdapter", () => {
     expect(calls[2]?.opts?.pathPrefix).toBeUndefined();
   });
 
+  it("passes on the packages the upgrade flags as incompatible", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+    const flagged = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
+You may have to update these packages to their latest version or file an issue to ask for support of the upgraded libraries.
+old-lib 1.0.0
+  └── ✕ unmet peer react@"^18": found 19.3.1
+`;
+    const { run } = fakeRunner((_cmd, args) => ({ code: 0, output: args[1]?.startsWith("@next/codemod") ? flagged : "" }));
+    const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(r.warnings).toEqual([
+      expect.stringContaining("Switchyard upgraded Next.js from 15.1.0"),
+      "old-lib 1.0.0 supports react ^18, but the upgrade installed react 19.3.1. If the build or the app fails, update or replace it.",
+    ]);
+  });
+
   it("runs the npm install and upgrade with legacy-peer-deps", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "^14.2.0" } }));
     const { run, calls } = fakeRunner();

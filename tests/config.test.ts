@@ -10,8 +10,15 @@ describe("config", () => {
     expect(config.CLOUDFLARE_CLIENT_ID).toMatch(/^[A-Za-z0-9_-]{8,}$/);
   });
 
-  it("uses dot-delimited scopes only (Cloudflare rejects colon-delimited ones)", () => {
-    for (const s of config.CLOUDFLARE_SCOPES) expect(s).toMatch(/^[a-z0-9_-]+\.[a-z_]+$/);
+  it("uses dot-delimited API scopes (Cloudflare rejects colon-delimited ones) plus offline_access", () => {
+    for (const s of config.CLOUDFLARE_SCOPES) {
+      if (s !== "offline_access") expect(s).toMatch(/^[a-z0-9_-]+\.[a-z_]+$/);
+    }
+  });
+
+  it("requests a refresh token and Workers script write access", () => {
+    expect(config.CLOUDFLARE_SCOPES).toContain("offline_access");
+    expect(config.CLOUDFLARE_SCOPES).toContain("workers-scripts.write");
   });
 
   it("never uses a common production branch name for the migration branch", () => {

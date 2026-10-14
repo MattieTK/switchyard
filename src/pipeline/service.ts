@@ -70,6 +70,15 @@ export function createJobService(d: {
         if (!WORKER_NAME.test(input.workerName)) {
           throw new UserInputError("Worker names use lowercase letters, digits and hyphens, up to 63 characters.");
         }
+        // The plan's own name was already warned about when it was shown. Any other name is new to the user.
+        if (input.workerName !== draft.plan.workerName) {
+          const existing = await d.clients.cloudflare.getWorkerTag(draft.accountId, input.workerName);
+          if (existing) {
+            throw new UserInputError(
+              `A Worker called ${input.workerName} already exists on this Cloudflare account. Choose another name.`,
+            );
+          }
+        }
         const env = skipEntries(draft.plan.env, input.skip);
         // Only accept typed values for entries Vercel didn't supply.
         const typed = Object.fromEntries(

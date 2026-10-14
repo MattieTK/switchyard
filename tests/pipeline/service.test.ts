@@ -21,7 +21,7 @@ const { plan: env, values } = buildEnvPlan(
 );
 const plan: MigrationPlan = { ...samplePlan, env };
 
-async function setup(opts: { accountId?: string; plan?: MigrationPlan } = {}) {
+async function setup(opts: { accountId?: string; plan?: MigrationPlan; existingWorkers?: string[] } = {}) {
   const dir = await makeTempDir();
   const credentials = createCredentialStore(join(dir, "c.json"));
   if (opts.accountId) {
@@ -30,9 +30,12 @@ async function setup(opts: { accountId?: string; plan?: MigrationPlan } = {}) {
   const store = createJobStore(join(dir, "jobs"));
   const queue = { enqueue: vi.fn(), idle: async () => {} };
   const buildPlan = vi.fn(async (_d: PlanDeps, _projectId: string) => ({ plan: opts.plan ?? plan, values }));
-  const clients = { vercel: async () => ({}), github: async () => ({}), cloudflare: {} } as unknown as ClientFactory;
+  const getWorkerTag = vi.fn(async (_account: string, name: string) =>
+    opts.existingWorkers?.includes(name) ? "tag-1" : null,
+  );
+  const clients = { vercel: async () => ({}), github: async () => ({}), cloudflare: { getWorkerTag } } as unknown as ClientFactory;
   const service = createJobService({ store, events: createJobEvents(), queue, clients, credentials, buildPlan });
-  return { service, store, queue, buildPlan };
+  return { service, store, queue, buildPlan, getWorkerTag };
 }
 
 const input = { projectId: "prj_1", workerName: "shop", nextCache: "kv" as const, values: {}, skip: [] };
@@ -64,6 +67,25 @@ describe("createJobService", () => {
     const { service } = await setup({ accountId: "acc" });
     await service.plan("prj_1");
     await expect(service.start({ ...input, workerName: "Bad Name", skip: ["s", "t"] })).rejects.toBeInstanceOf(UserInputError);
+  });
+
+  it("rejects a changed Worker name that already exists on the account, and keeps the plan for another try", async () => {
+    const { service, getWorkerTag } = await setup({ accountId: "acc", existingWorkers: ["taken"] });
+    await service.plan("prj_1");
+    const approve = { ...input, skip: ["s", "t"] };
+    await expect(service.start({ ...approve, workerName: "taken" })).rejects.toBeInstanceOf(UserInputError);
+    await expect(service.start({ ...approve, workerName: "taken" })).rejects.toThrow("taken");
+    expect(getWorkerTag).toHaveBeenCalledWith("acc", "taken");
+    const job = await service.start({ ...approve, workerName: "free" });
+    expect(job.plan.workerName).toBe("free");
+  });
+
+  it("allows the plan's own Worker name even when it exists, since the plan already warned about it", async () => {
+    const { service, getWorkerTag } = await setup({ accountId: "acc", existingWorkers: ["shop"] });
+    await service.plan("prj_1");
+    const job = await service.start({ ...input, skip: ["s", "t"] });
+    expect(job.plan.workerName).toBe("shop");
+    expect(getWorkerTag).not.toHaveBeenCalled();
   });
 
   it("creates and queues a job with typed values and skips, and only accepts values that were missing", async () => {

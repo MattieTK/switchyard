@@ -73,6 +73,17 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
       <h1>Plan for {plan.projectName}</h1>
       <p className="lede">Nothing has changed yet. Review the plan, fill in anything missing, then approve.</p>
 
+      {plan.warnings.length > 0 && (
+        <section className="card">
+          <h2 className="warning">Check before approving</h2>
+          <ul>
+            {plan.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {plan.blockers.length > 0 && (
         <section className="card">
           <h2 className="error">This project can't be moved yet</h2>

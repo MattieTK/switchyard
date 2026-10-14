@@ -53,7 +53,7 @@ for (const id of queued) queue.enqueue(id);
 
 const staticDir = join(import.meta.dirname, "..", "..", "dist", "web");
 if (!existsSync(join(staticDir, "index.html"))) {
-  console.warn("The web UI hasn't been built yet. Run `pnpm build:web` first.");
+  console.warn("The web UI hasn't been built yet. Start Switchyard with `pnpm start`, which builds it.");
 }
 
 const launchToken = randomToken();

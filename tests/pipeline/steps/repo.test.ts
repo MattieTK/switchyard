@@ -86,7 +86,7 @@ describe("convertStep", () => {
 
     expect(calls.map((c) => c.args)).toEqual([
       ["reset", "--hard", "origin/main"],
-      ["clean", "-fdx", "-e", "node_modules"],
+      ["clean", "-fdx"],
       ["ls-files", "--", ".dev.vars"],
     ]);
     expect(calls[2]?.opts?.cwd).toBe(repoDir);

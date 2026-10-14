@@ -71,7 +71,11 @@ export function createJsonClient(o: JsonClientOptions): JsonClient {
         if (res.ok) {
           if (res.status === 204) return undefined as T;
           const text = await res.text();
-          return (text ? JSON.parse(text) : undefined) as T;
+          try {
+            return (text ? JSON.parse(text) : undefined) as T;
+          } catch {
+            throw new ApiError(o.service, res.status, "Response was not valid JSON");
+          }
         }
         if (res.status === 404 && req.allow404) return null as T;
 

@@ -14,6 +14,7 @@ export interface JobStore {
   readValues(id: string): Promise<EnvValues>;
   deleteValues(id: string): Promise<void>;
   appendLog(id: string, line: string): Promise<void>;
+  flush(id: string): Promise<void>;
   readLog(id: string): Promise<string>;
   recoverInterrupted(): Promise<{ failed: string[]; queued: string[] }>;
 }
@@ -78,6 +79,10 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
       );
       logChains.set(id, next.catch(() => undefined));
       return next;
+    },
+    flush(id) {
+      // The chain tail never rejects, so this resolves once every append issued so far has settled.
+      return logChains.get(id) ?? Promise.resolve();
     },
     async readLog(id) {
       if (!UUID.test(id)) return "";

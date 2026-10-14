@@ -66,6 +66,30 @@ describe("runJob", () => {
     expect(done.steps[0]).toMatchObject({ status: "done", outputs: { dir: "/w" } });
   });
 
+  it.each([
+    ["done", async () => {}],
+    ["failed", async () => { throw new Error("boom"); }],
+    ["paused", async () => { throw new PauseError({ reason: "Install the app" }); }],
+  ] as const)("flushes the log before publishing the final %s state, so a retry can't be dropped", async (status, run) => {
+    const { deps, job, store, events } = await setup();
+    const order: string[] = [];
+    const flush = store.flush.bind(store);
+    deps.store = {
+      ...store,
+      flush: async (id: string) => {
+        await flush(id);
+        await new Promise((r) => setTimeout(r, 10));
+        order.push("flush");
+      },
+    };
+    events.subscribe(job.id, (e) => {
+      if (e.type === "job") order.push(`job:${e.job.status}`);
+    });
+    await runJob(job.id, [step("clone", run)], deps);
+    expect(order.at(-2)).toBe("flush");
+    expect(order.at(-1)).toBe(`job:${status}`);
+  });
+
   it("pauses for reconnection on auth errors", async () => {
     const { deps, job } = await setup();
     const r = await runJob(

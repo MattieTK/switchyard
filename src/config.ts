@@ -15,12 +15,16 @@ export const PREVIEW_TRIGGER = "switchyard-preview";
 // Where the user installs the Cloudflare GitHub App when Cloudflare can't see the repository.
 export const GITHUB_APP_INSTALL_URL = "https://github.com/apps/cloudflare-workers-and-pages/installations/new";
 
-export const PORT = 4417;
+// SWITCHYARD_PORT and SWITCHYARD_CLOUDFLARE_CLIENT_ID are for development, so a second copy can
+// run beside a normal one (with SWITCHYARD_HOME for its data). Another port needs an OAuth
+// client that lists that port's callback URL.
+const portOverride = Number.parseInt(process.env.SWITCHYARD_PORT ?? "", 10);
+export const PORT = Number.isInteger(portOverride) && portOverride > 0 ? portOverride : 4417;
 export const ORIGIN = `http://localhost:${PORT}`;
 export const CLOUDFLARE_REDIRECT_URI = `${ORIGIN}/auth/cloudflare/callback`;
 
 // Public PKCE client "Switchyard (local)" on the maintainer's Cloudflare account (no secret).
-export const CLOUDFLARE_CLIENT_ID = "fd44d867323dfcafb07057f91e3730c1";
+export const CLOUDFLARE_CLIENT_ID = process.env.SWITCHYARD_CLOUDFLARE_CLIENT_ID || "fd44d867323dfcafb07057f91e3730c1";
 
 // offline_access asks for a refresh token; without it the session ends after an hour.
 export const CLOUDFLARE_SCOPES = [

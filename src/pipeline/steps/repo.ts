@@ -8,7 +8,13 @@ import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
-import { addCommand, execCommand, installEnv, type PackageManager } from "../../translate/package-manager.ts";
+import {
+  addCommand,
+  execCommand,
+  installEnv,
+  type PackageManager,
+  runScriptCommand,
+} from "../../translate/package-manager.ts";
 import type { Step, StepContext } from "../types.ts";
 import { findUndeclaredImports, previousVersion } from "../undeclared-deps.ts";
 import { git, productionBuildEnv, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
@@ -110,6 +116,7 @@ export const convertStep: Step = {
     }
 
     ctx.outputs.projectDir = dir;
+    if (result.buildScript) ctx.outputs.buildScript = result.buildScript;
     ctx.outputs.warnings = JSON.stringify(result.warnings);
   },
 };
@@ -170,7 +177,9 @@ export const buildStep: Step = {
   title: "Build locally with cf",
   async run(ctx) {
     const dir = requireOutput(ctx, "convert", "projectDir");
-    const { cmd, args } = execCommand(ctx.job.plan.packageManager, "cf", ["build"]);
+    const pm = ctx.job.plan.packageManager;
+    const script = ctx.output("convert").buildScript;
+    const { cmd, args } = script ? runScriptCommand(pm, script) : execCommand(pm, "cf", ["build"]);
     const options = { cwd: dir, onLine: ctx.log, env: { ...productionBuildEnv(ctx), CI: "1" } };
     const warnings: string[] = [];
     for (let repairs = 0; ; repairs++) {

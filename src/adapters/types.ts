@@ -26,6 +26,8 @@ export interface ConvertContext {
 export interface ConvertResult {
   // Module the generated cron entry should wrap.
   baseEntrypoint: string;
+  // package.json script that builds for Cloudflare, when cf build alone would skip steps.
+  buildScript?: string;
   warnings: string[];
 }
 

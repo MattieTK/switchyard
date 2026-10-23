@@ -21,9 +21,12 @@ const SCHEDULES: Record<string, string[]> = {
 ${schedules}
 };
 
+// Types from the handler itself, so this file type-checks in apps without the Workers types.
+type Context = Parameters<typeof app.fetch>[2] & { waitUntil(promise: Promise<unknown>): void };
+
 export default {
-  fetch: (request: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(request, env, ctx),
-  async scheduled(controller: ScheduledController, env: Record<string, unknown>, ctx: ExecutionContext) {
+  fetch: (request: Request, env: Record<string, unknown>, ctx: Context) => app.fetch(request, env, ctx),
+  async scheduled(controller: { cron: string }, env: Record<string, unknown>, ctx: Context) {
     const headers = new Headers({ "user-agent": "vercel-cron/1.0" });
     if (typeof env.CRON_SECRET === "string") headers.set("authorization", \`Bearer \${env.CRON_SECRET}\`);
     for (const path of SCHEDULES[controller.cron] ?? []) {

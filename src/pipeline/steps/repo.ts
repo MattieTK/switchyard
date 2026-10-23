@@ -153,7 +153,12 @@ export const convertStep: Step = {
       pm: plan.packageManager,
       run: ctx.deps.run,
       log: ctx.log,
-      options: { nextCache: plan.nextCache },
+      options: {
+        nextCache: plan.nextCache,
+        adoptionCodemods: plan.options?.adoptionCodemods ?? false,
+        eslintMigration: plan.options?.eslintMigration ?? false,
+        updateFlaggedPackages: plan.options?.updateFlaggedPackages ?? false,
+      },
     });
     const warnings = [
       ...(yarnWarning ? [yarnWarning] : []),

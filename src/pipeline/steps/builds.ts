@@ -2,7 +2,7 @@ import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
 import { GITHUB_APP_INSTALL_URL, MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
-import { execString, packageManagerVersionVariable, runScriptCommand } from "../../translate/package-manager.ts";
+import { execString, runScriptCommand } from "../../translate/package-manager.ts";
 import { buildDashboardUrl, interpretBuild } from "../build-status.ts";
 import { PauseError, type Step } from "../types.ts";
 import { requireOutput, requireRepo } from "./shared.ts";
@@ -93,10 +93,6 @@ export const buildsStep: Step = {
       [preview, "preview"],
     ] as const) {
       const vars = triggerVariables(plan.env, ctx.values, which);
-      // Workers Builds documents these variables, but not whether it reads packageManager, so
-      // the version is passed both ways. A variable the user set on Vercel takes precedence.
-      const pin = packageManagerVersionVariable(ctx.output("convert").packageManager);
-      if (pin && !(pin.name in vars)) vars[pin.name] = { value: pin.value, is_secret: false };
       if (Object.keys(vars).length) await cf.setTriggerEnv(accountId, trigger.trigger_uuid, vars);
       ctx.log(`${trigger.trigger_name}: ${Object.keys(vars).length} build variables set`);
     }

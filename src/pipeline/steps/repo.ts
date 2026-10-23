@@ -262,9 +262,6 @@ export const convertStep: Step = {
 
     ctx.outputs.projectDir = dir;
     if (result.buildScript) ctx.outputs.buildScript = result.buildScript;
-    // The version package.json asks for, whether the project had it or Switchyard set it.
-    const packageManager = parsePackageJson(await readFile(join(dir, "package.json"), "utf8").catch(() => null))?.packageManager;
-    if (packageManager) ctx.outputs.packageManager = packageManager;
     ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };

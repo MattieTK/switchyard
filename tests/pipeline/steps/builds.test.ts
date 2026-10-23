@@ -92,32 +92,6 @@ describe("buildsStep", () => {
     expect(created[0]?.deploy_command).toBe("pnpm exec cf deploy --prebuilt");
   });
 
-  it("passes the version packageManager names as a build variable, unless the user set one", async () => {
-    const { cf, envCalls } = cloudflare();
-    const { ctx } = makeContext({
-      plan: { env, repo: { owner: "acme", name: "shop", productionBranch: "main", rootDirectory: "" } },
-      values,
-      deps: { cloudflare: cf, github: async () => github },
-      outputs: { deploy: { workerTag: "tag-1" }, convert: { packageManager: "pnpm@11.27.1+sha512.abc" } },
-    });
-    await buildsStep.run(ctx);
-    expect(envCalls[0]?.[1]).toEqual({
-      API_KEY: { value: "prod", is_secret: true },
-      PNPM_VERSION: { value: "11.27.1", is_secret: false },
-    });
-
-    const own = buildEnvPlan([{ id: "v", key: "PNPM_VERSION", value: "10.0.0", type: "plain", target: ["production", "preview"] }], []);
-    const mine = cloudflare();
-    const { ctx: userSet } = makeContext({
-      plan: { env: own.plan },
-      values: own.values,
-      deps: { cloudflare: mine.cf, github: async () => github },
-      outputs: { deploy: { workerTag: "tag-1" }, convert: { packageManager: "pnpm@11.27.1" } },
-    });
-    await buildsStep.run(userSet);
-    expect(mine.envCalls[0]?.[1]).toEqual({ PNPM_VERSION: { value: "10.0.0", is_secret: false } });
-  });
-
   it("reuses triggers that already exist", async () => {
     const { cf, created } = cloudflare({
       listTriggers: async () => [

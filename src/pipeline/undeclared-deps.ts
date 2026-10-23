@@ -10,8 +10,15 @@ export interface UndeclaredImport {
   importer: string;
 }
 
-// Rolldown (Vite 8) and Rollup report the same way.
-const UNRESOLVED = /(?:Rolldown|Rollup) failed to resolve import "([^"]+)" from "([^"]+)"/g;
+// Each pattern captures the missing specifier and the file that imported it.
+const UNRESOLVED = [
+  // Rolldown (Vite 8) and Rollup report the same way.
+  /(?:Rolldown|Rollup) failed to resolve import "([^"]+)" from "([^"]+)"/g,
+  // Node's require, for example while loading next.config.js. The importer is first in the stack.
+  /Cannot find module '([^']+)'\r?\nRequire stack:\r?\n- ([^\r\n]+)/g,
+  // Node's ESM loader.
+  /Cannot find package '([^']+)' imported from ([^\s]+)/g,
+];
 
 // The package part of a bare specifier: "@babel/runtime/regenerator" gives "@babel/runtime".
 function packageNameOf(specifier: string): string | null {
@@ -34,7 +41,7 @@ function packageOfPath(path: string): string | null {
 // code are often path aliases, and Switchyard must never install a guessed name from npm.
 export function findUndeclaredImports(output: string): UndeclaredImport[] {
   const found = new Map<string, UndeclaredImport>();
-  for (const [, specifier = "", from = ""] of output.matchAll(UNRESOLVED)) {
+  for (const [, specifier = "", from = ""] of UNRESOLVED.flatMap((pattern) => [...output.matchAll(pattern)])) {
     const packageName = packageNameOf(specifier);
     const importer = packageOfPath(from);
     if (packageName && importer && importer !== packageName && !found.has(packageName)) {

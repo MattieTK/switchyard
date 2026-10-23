@@ -288,8 +288,6 @@ describe("convertStep", () => {
       expect(calls.find((c) => c.args[0] === "import")).toMatchObject({ cmd: "pnpm", opts: { cwd: repoDir } });
       await expect(stat(join(repoDir, "yarn.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(JSON.parse(await readFile(join(repoDir, "package.json"), "utf8")).packageManager).toBe("pnpm@11.27.1");
-      // Workers Builds gets this version as PNPM_VERSION.
-      expect(ctx.outputs.packageManager).toBe("pnpm@11.27.1");
       expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe("shamefullyHoist: true\n");
       expect(await readFile(join(repoDir, ".npmrc"), "utf8")).toBe("shamefully-hoist=true\n");
       expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([

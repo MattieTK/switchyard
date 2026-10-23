@@ -186,6 +186,16 @@ describe("buildStep", () => {
     expect(calls[0]).toMatchObject({ cmd: "pnpm", args: ["exec", "cf", "build"], opts: { cwd: "/w/app", env: { CI: "1" } } });
   });
 
+  it("runs the build:cloudflare script when the conversion added one", async () => {
+    const { run, calls } = fakeRunner();
+    const { ctx } = makeContext({
+      deps: { run },
+      outputs: { convert: { projectDir: "/w/app", buildScript: "build:cloudflare" } },
+    });
+    await buildStep.run(ctx);
+    expect(calls[0]).toMatchObject({ cmd: "pnpm", args: ["run", "build:cloudflare"], opts: { cwd: "/w/app" } });
+  });
+
   it("passes the production build variables to the build, with CI still set", async () => {
     const { plan: env, values } = buildEnvPlan(
       [

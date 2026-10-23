@@ -269,6 +269,33 @@ old-lib 1.0.0
     });
   });
 
+  it("adds a build:cloudflare script that keeps the steps before next build", async () => {
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ dependencies: { next: "16.2.0" }, scripts: { build: "prisma generate && next build" } }),
+    );
+    const { run } = fakeRunner();
+    const r = await nextjsAdapter.convert({ dir, pm: "npm", run, log: () => {}, options: { nextCache: "kv" } });
+    const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    expect(manifest.scripts).toEqual({
+      build: "prisma generate && next build",
+      "build:cloudflare": "prisma generate && cf build",
+    });
+    expect(r.buildScript).toBe("build:cloudflare");
+    expect(r.warnings).toContain(
+      "cf build doesn't run the app's build script, so Switchyard added a build:cloudflare script (`prisma generate && cf build`) that keeps its other build steps, and Workers Builds runs that script.",
+    );
+  });
+
+  it("adds no script when the build is only next build", async () => {
+    const original = `${JSON.stringify({ dependencies: { next: "16.2.0" }, scripts: { build: "next build" } }, null, 2)}\n`;
+    await writeFile(join(dir, "package.json"), original);
+    const { run } = fakeRunner();
+    const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(r.buildScript).toBeUndefined();
+    expect(await readFile(join(dir, "package.json"), "utf8")).toBe(original);
+  });
+
   describe("module type", () => {
     // Does what vinext init does to package.json and the Vite config.
     const initLikeVinext = (config = "vite.config.ts") =>

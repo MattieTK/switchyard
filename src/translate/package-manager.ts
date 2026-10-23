@@ -51,6 +51,11 @@ export function execCommand(pm: PackageManager, bin: string, args: readonly stri
   }
 }
 
+// Runs one of the project's package.json scripts.
+export function runScriptCommand(pm: PackageManager, script: string): { cmd: string; args: string[] } {
+  return { cmd: pm, args: ["run", script] };
+}
+
 // The same command as a single string, for Workers Builds build and deploy commands.
 export function execString(pm: PackageManager, line: string): string {
   const [bin = "", ...args] = line.split(" ");

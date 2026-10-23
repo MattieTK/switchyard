@@ -81,6 +81,17 @@ describe("buildsStep", () => {
     expect(ctx.outputs).toEqual({ productionTrigger: "tr-1", previewTrigger: "tr-2" });
   });
 
+  it("builds with the build:cloudflare script when the conversion added one", async () => {
+    const { cf, created } = cloudflare();
+    const { ctx } = makeContext({
+      deps: { cloudflare: cf, github: async () => github },
+      outputs: { deploy: { workerTag: "tag-1" }, convert: { buildScript: "build:cloudflare" } },
+    });
+    await buildsStep.run(ctx);
+    expect(created.map((t) => t.build_command)).toEqual(["pnpm run build:cloudflare", "pnpm run build:cloudflare"]);
+    expect(created[0]?.deploy_command).toBe("pnpm exec cf deploy --prebuilt");
+  });
+
   it("reuses triggers that already exist", async () => {
     const { cf, created } = cloudflare({
       listTriggers: async () => [

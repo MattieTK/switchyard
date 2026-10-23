@@ -3,6 +3,7 @@ import { appendFile, chmod, mkdtemp, readFile, rename, rm, writeFile } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { satisfies, validRange } from "semver";
+import { CLOUDFLARE_BUILD_SCRIPT, cloudflareBuildScript } from "../codegen/build-script.ts";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, runOrThrow } from "../exec.ts";
 import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
@@ -12,6 +13,7 @@ import {
   installCommand,
   installEnv,
   type PackageManager,
+  runScriptCommand,
 } from "../translate/package-manager.ts";
 import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
 import type { Adapter, ConvertContext, NextCachePreset } from "./types.ts";
@@ -184,6 +186,26 @@ async function restoreModuleType(dir: string, typeBefore: string | undefined): P
   await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+// Writes the build:cloudflare script when the app's build runs steps before next build.
+// Returns the script's name, or null when cf build alone does the same.
+async function writeCloudflareBuildScript(ctx: ConvertContext, warnings: string[]): Promise<string | null> {
+  const path = join(ctx.dir, "package.json");
+  const manifest = JSON.parse(await readFile(path, "utf8").catch(() => "{}")) as { scripts?: Record<string, string> };
+  const run = (name: string) => {
+    const c = runScriptCommand(ctx.pm, name);
+    return [c.cmd, ...c.args].join(" ");
+  };
+  const result = cloudflareBuildScript(manifest.scripts, run);
+  warnings.push(...result.warnings);
+  if (!result.script) return null;
+  manifest.scripts = { ...manifest.scripts, [CLOUDFLARE_BUILD_SCRIPT]: result.script };
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  warnings.push(
+    `cf build doesn't run the app's build script, so Switchyard added a ${CLOUDFLARE_BUILD_SCRIPT} script (\`${result.script}\`) that keeps its other build steps, and Workers Builds runs that script.`,
+  );
+  return CLOUDFLARE_BUILD_SCRIPT;
+}
+
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
   label: "Next.js (vinext)",
@@ -243,6 +265,7 @@ export const nextjsAdapter: Adapter = {
         "pnpm blocked some dependency build scripts during install. If the Cloudflare build fails, run `pnpm approve-builds` in the project and commit the result.",
       );
     }
-    return { baseEntrypoint: "vinext/server/fetch-handler", warnings };
+    const buildScript = await writeCloudflareBuildScript(ctx, warnings);
+    return { baseEntrypoint: "vinext/server/fetch-handler", warnings, ...(buildScript ? { buildScript } : {}) };
   },
 };

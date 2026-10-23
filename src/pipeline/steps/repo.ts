@@ -7,14 +7,17 @@ import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import {
   approveBuilds,
+  isYarn1Lockfile,
   MIN_NODE_MAJOR,
   NODE_VERSION_FILES,
   raiseNodeVersion,
   undecidedBuilds,
+  YARN_1_VERSION,
 } from "../../codegen/toolchain-files.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
+import { parsePackageJson } from "../../translate/package-json.ts";
 import {
   addCommand,
   execCommand,
@@ -110,6 +113,23 @@ async function updateToolchainFiles(
   return warnings;
 }
 
+// Keeps a Yarn 1 project on Yarn 1 everywhere by naming it in package.json. Returns a
+// warning when package.json changed.
+async function pinYarn1(projectDir: string, repoDir: string): Promise<string | null> {
+  const path = join(projectDir, "package.json");
+  const text = await readFile(path, "utf8").catch(() => null);
+  if (text === null || parsePackageJson(text)?.packageManager) return null;
+  for (const folder of new Set([projectDir, repoDir])) {
+    const lock = await readFile(join(folder, "yarn.lock"), "utf8").catch(() => null);
+    if (lock === null) continue;
+    if (!isYarn1Lockfile(lock)) return null;
+    const manifest = JSON.parse(text) as Record<string, unknown>;
+    await writeFile(path, `${JSON.stringify({ ...manifest, packageManager: `yarn@${YARN_1_VERSION}` }, null, 2)}\n`);
+    return `Switchyard set packageManager to yarn@${YARN_1_VERSION} in package.json. The project has a Yarn 1 lockfile, which Vercel installs with Yarn 1, while Workers Builds would otherwise use Yarn 4 and switch the project to Plug'n'Play.`;
+  }
+  return null;
+}
+
 export const convertStep: Step = {
   id: "convert",
   title: "Convert the project",
@@ -126,6 +146,7 @@ export const convertStep: Step = {
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");
     if (!adapter) throw new Error(`There is no converter for ${plan.adapterId ?? "this framework"}.`);
     const dir = projectDirFor(repoDir, repo.rootDirectory);
+    const yarnWarning = plan.packageManager === "yarn" ? await pinYarn1(dir, repoDir) : null;
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
@@ -135,6 +156,7 @@ export const convertStep: Step = {
       options: { nextCache: plan.nextCache },
     });
     const warnings = [
+      ...(yarnWarning ? [yarnWarning] : []),
       ...result.warnings,
       ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
     ];

@@ -338,6 +338,29 @@ describe("convertStep", () => {
     });
   });
 
+  it("removes lockfiles of package managers the project doesn't use", async () => {
+    const repoDir = await makeTempDir();
+    for (const f of ["package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"]) await writeFile(join(repoDir, f), "{}");
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx } = makeContext({
+      plan: { packageManager: "pnpm" },
+      deps: { run: fakeRunner().run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    await expect(stat(join(repoDir, "yarn.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(repoDir, "package-lock.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(repoDir, "pnpm-lock.yaml"))).isFile()).toBe(true);
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toContainEqual(
+      "The project had lockfiles for more than one package manager. Switchyard kept pnpm's, the one it detected, and removed package-lock.json, yarn.lock, because the Cloudflare build tools could otherwise pick another package manager.",
+    );
+  });
+
   it("works inside the project's root directory", async () => {
     const repoDir = await makeTempDir();
     await mkdir(join(repoDir, "apps/web"), { recursive: true });

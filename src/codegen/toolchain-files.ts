@@ -87,3 +87,12 @@ export function preapproveYarnPackages(
   const base = text === "" || text.endsWith("\n") ? text : `${text}\n`;
   return { text: `${base}${base ? "\n" : ""}npmPreapprovedPackages:\n${items}\n`, added };
 }
+
+// Vercel installs a project with a Yarn 1 lockfile using Yarn 1 unless package.json names
+// another version. Yarn 4, which Workers Builds and current Yarn installs default to,
+// would instead rewrite the lockfile and switch the project to Plug'n'Play.
+export const YARN_1_VERSION = "1.22.22";
+
+export function isYarn1Lockfile(text: string): boolean {
+  return /^# yarn lockfile v1\s*$/m.test(text);
+}

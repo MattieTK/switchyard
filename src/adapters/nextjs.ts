@@ -16,7 +16,8 @@ import {
   type PackageManager,
   runScriptCommand,
 } from "../translate/package-manager.ts";
-import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
+import { type LatestRelease, planFlaggedUpdates } from "./flagged-packages.ts";
+import { type IncompatibleDependency, incompatibleDependencies, incompatibleDependencyWarning } from "./next-codemod-output.ts";
 import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
@@ -143,15 +144,17 @@ function preapprovalPattern(name: string): string {
   return name.startsWith("@") ? `${name.split("/")[0]}/*` : name;
 }
 
-// Runs vinext init. Yarn 4 holds back releases newer than npmMinimalAgeGate, and vinext
-// init installs Cloudflare packages that are often only days old, so the install can fail.
-// The packages Yarn names are added to npmPreapprovedPackages, package.json and yarn.lock
-// go back to how they were, and vinext init runs again.
-async function runVinextInit(
+// Runs a command that installs packages. Yarn 4 holds back releases newer than
+// npmMinimalAgeGate, and the conversion installs packages that are often only days old
+// (Cloudflare's tooling, or the latest release of a flagged package), so the install can
+// fail. The packages Yarn names are added to npmPreapprovedPackages, package.json and
+// yarn.lock go back to how they were, and the command runs again.
+async function runInstall(
   ctx: ConvertContext,
   command: { cmd: string; args: string[] },
   env: Record<string, string>,
   warnings: string[],
+  label: string,
 ): Promise<RunResult> {
   const read = (path: string | null) => (path ? readFile(path, "utf8").catch(() => null) : Promise.resolve(null));
   const manifestPath = join(ctx.dir, "package.json");
@@ -184,7 +187,7 @@ async function runVinextInit(
     if (lockPath && lock !== null) await writeFile(lockPath, lock);
     approved.push(...blocked);
     ctx.log(
-      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running vinext init again.`,
+      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running ${label} again.`,
     );
   }
 }
@@ -228,6 +231,46 @@ async function updateVinextPeers(ctx: ConvertContext, env: Record<string, string
     (p) =>
       `Switchyard updated ${p.name} from ${p.version} to ${p.range}, because vinext needs a version in that range. Check the app still works with it.`,
   );
+}
+
+// The registry's latest release of a package, or null when it can't be read. npm comes with
+// Node and reads the project's .npmrc, so private registries work too. With more than one
+// field npm prints an object, but only a version string when the package has no peers.
+async function latestRelease(ctx: ConvertContext, name: string): Promise<LatestRelease | null> {
+  const result = await ctx.run("npm", ["view", `${name}@latest`, "version", "peerDependencies", "--json"], { cwd: ctx.dir });
+  if (result.code !== 0) return null;
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown;
+    if (typeof parsed === "string") return { version: parsed };
+    const release = parsed as Partial<LatestRelease> | null;
+    return typeof release?.version === "string" ? { version: release.version, peerDependencies: release.peerDependencies ?? {} } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Updates the packages the upgrade flagged as incompatible to their latest release, when
+// that release supports what the upgrade installed. Returns a warning for each package.
+async function updateFlaggedPackages(
+  ctx: ConvertContext,
+  flagged: readonly IncompatibleDependency[],
+  env: Record<string, string>,
+  warnings: string[],
+): Promise<string[]> {
+  if (!flagged.length) return [];
+  const direct = allDependencies(await readPackageJson(ctx.dir));
+  const latest = new Map<string, LatestRelease | null>();
+  for (const p of flagged) if (p.name in direct) latest.set(p.name, await latestRelease(ctx, p.name));
+  const plan = planFlaggedUpdates(flagged, direct, latest);
+  if (plan.updates.length) {
+    const add = addCommand(ctx.pm, plan.updates.map((u) => `${u.name}@${u.to}`));
+    await runInstall(ctx, add, env, warnings, "the update").catch((error: unknown) => {
+      throw new Error(
+        `Updating ${plan.updates.map((u) => u.name).join(", ")} failed (${(error as Error).message}). Check the log, or build the plan again without Update flagged packages.`,
+      );
+    });
+  }
+  return plan.warnings;
 }
 
 // vinext init sets "type": "module" so its Vite config loads as an ES module. That also
@@ -402,9 +445,11 @@ export const nextjsAdapter: Adapter = {
       if (upgraded.code !== 0) throw upgradeError(upgrade, upgraded, ctx.options);
       warnings.push(
         `Switchyard upgraded Next.js from ${old.range} to ${NEXT_UPGRADE_VERSION} with the official Next.js codemods. The codemods don't cover every breaking change, so review the pull request and test the preview before switching traffic.`,
-        ...incompatibleDependencyWarnings(upgraded.output),
-        ...(ctx.options.eslintMigration ? [] : await nextLintWarnings(ctx.dir)),
       );
+      const flagged = incompatibleDependencies(upgraded.output);
+      if (ctx.options.updateFlaggedPackages) warnings.push(...(await updateFlaggedPackages(ctx, flagged, env, warnings)));
+      else warnings.push(...flagged.map(incompatibleDependencyWarning));
+      if (!ctx.options.eslintMigration) warnings.push(...(await nextLintWarnings(ctx.dir)));
     }
     const { cmd, args } = dlxCommand(ctx.pm, `vinext@${VINEXT_VERSION}`, [
       "init",
@@ -412,7 +457,7 @@ export const nextjsAdapter: Adapter = {
       ...NEXT_CACHE_FLAGS[ctx.options.nextCache],
       "--image-optimization=cloudflare-images",
     ]);
-    const result = await runVinextInit(ctx, { cmd, args }, env, warnings);
+    const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
     await restoreModuleType(ctx.dir, typeBefore);
     warnings.push(...(await updateVinextPeers(ctx, env)));
     if (result.output.includes("approve-builds")) {

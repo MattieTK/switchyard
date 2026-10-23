@@ -260,6 +260,67 @@ old-lib 1.0.0
       ).rejects.toThrow("exited with code 1");
     });
 
+    it("updates flagged packages to a latest release that supports the new React, when chosen", async () => {
+      const report = `⚠ Found 3 dependencies that seem incompatible with the upgraded package versions.
+You may have to update these packages to their latest version or file an issue to ask for support of the upgraded libraries.
+framer-motion 7.3.5
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+recharts 2.1.14
+  └── ✕ unmet peer react@"^16.0.0 || ^17.0.0 || ^18.0.0": found 19.3.1
+ai 2.2.1
+  └── ✕ unmet peer react@"^18.2.0": found 19.3.1
+`;
+      const registry: Record<string, { code: number; output: string }> = {
+        "framer-motion@latest": { code: 0, output: '{"version":"12.4.0","peerDependencies":{"react":"^18.0.0 || ^19.0.0"}}' },
+        "recharts@latest": { code: 0, output: '{"version":"2.15.0","peerDependencies":{"react":"^16.0.0 || ^17.0.0 || ^18.0.0"}}' },
+        "ai@latest": { code: 1, output: "npm error 404" },
+      };
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5", recharts: "^2.1.14", ai: "2.2.1" } }),
+      );
+      const options = { nextCache: "kv" as const, updateFlaggedPackages: true };
+      const { run, calls } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return registry[args[1] ?? ""] ?? { code: 1, output: "" };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options });
+      expect(calls.find((c) => c.args[0] === "add")?.args).toEqual(["add", "framer-motion@^12.4.0"]);
+      expect(r.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Switchyard updated framer-motion from 7.3.5 to ^12.4.0"),
+          expect.stringContaining("Its latest release, 2.15.0, doesn't declare support for react 19.3.1 either"),
+          expect.stringContaining("couldn't look up its latest release"),
+        ]),
+      );
+
+      // Without the option, the report only becomes warnings and nothing is looked up.
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5" } }));
+      const plain = fakeRunner((_cmd, args) => ({ code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" }));
+      const p = await nextjsAdapter.convert({ dir, pm: "pnpm", run: plain.run, log: () => {}, options: { nextCache: "kv" } });
+      expect(plain.calls.some((c) => c.cmd === "npm")).toBe(false);
+      expect(p.warnings).toContain(
+        "framer-motion 7.3.5 supports react ^18.0.0, but the upgrade installed react 19.3.1. If the build or the app fails, update or replace it.",
+      );
+    });
+
+    it("names the option when installing the updates fails", async () => {
+      const report = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
+advice
+framer-motion 7.3.5
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+`;
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5" } }));
+      const { run } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return { code: 0, output: '"12.4.0"' };
+        if (args[0] === "add") return { code: 1, output: "ERR_PNPM_FETCH_404" };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", updateFlaggedPackages: true } }),
+      ).rejects.toThrow("Updating framer-motion failed (pnpm add framer-motion@^12.4.0 exited with code 1). Check the log, or build the plan again without Update flagged packages.");
+    });
+
     it("warns about scripts that still run next lint when the ESLint migration didn't run", async () => {
       const pkg = { dependencies: { next: "15.1.0" }, scripts: { lint: "next lint", "lint:fix": "next lint --fix", test: "vitest" } };
       await writeFile(join(dir, "package.json"), JSON.stringify(pkg));

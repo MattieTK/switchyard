@@ -225,6 +225,60 @@ old-lib 1.0.0
     ]);
   });
 
+  describe("upgrade options", () => {
+    const upgradeArgs = (calls: { args: string[] }[]) => calls.find((c) => c.args[1]?.startsWith("@next/codemod"))?.args.slice(2);
+
+    it("runs only the required migrations unless the user chose more", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      const { run, calls } = fakeRunner();
+      await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+      expect(upgradeArgs(calls)).toEqual(["upgrade", "16.4.1", "--yes", "--skip-adoption", "--skip-eslint-upgrade"]);
+    });
+
+    it("drops the skip flag for each chosen option", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      for (const [options, expected] of [
+        [{ adoptionCodemods: true }, ["--skip-eslint-upgrade"]],
+        [{ eslintMigration: true }, ["--skip-adoption"]],
+        [{ adoptionCodemods: true, eslintMigration: true }, []],
+      ] as const) {
+        const { run, calls } = fakeRunner();
+        await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", ...options } });
+        expect(upgradeArgs(calls)).toEqual(["upgrade", "16.4.1", "--yes", ...expected]);
+      }
+    });
+
+    it("names the chosen options when the upgrade fails", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      const failing = () =>
+        fakeRunner((_cmd, args) => ({ code: args[1]?.startsWith("@next/codemod") ? 1 : 0, output: "Failed to run eslint migrate-config" })).run;
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run: failing(), log: () => {}, options: { nextCache: "kv", eslintMigration: true } }),
+      ).rejects.toThrow("The Next.js upgrade failed with ESLint migration chosen. Check the log, or build the plan again without it.");
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run: failing(), log: () => {}, options: { nextCache: "kv" } }),
+      ).rejects.toThrow("exited with code 1");
+    });
+
+    it("warns about scripts that still run next lint when the ESLint migration didn't run", async () => {
+      const pkg = { dependencies: { next: "15.1.0" }, scripts: { lint: "next lint", "lint:fix": "next lint --fix", test: "vitest" } };
+      await writeFile(join(dir, "package.json"), JSON.stringify(pkg));
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(r.warnings).toContain(
+        "The lint, lint:fix scripts run next lint, which Next.js 16 removed. Choose ESLint migration under Upgrade options, or change them to run eslint directly.",
+      );
+      await writeFile(join(dir, "package.json"), JSON.stringify(pkg));
+      const migrated = await nextjsAdapter.convert({
+        dir,
+        pm: "pnpm",
+        run: fakeRunner().run,
+        log: () => {},
+        options: { nextCache: "kv", eslintMigration: true },
+      });
+      expect(migrated.warnings.join("\n")).not.toContain("next lint");
+    });
+  });
+
   it("doesn't upgrade an app already on Next.js 16", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "16.2.0" } }));
     const { run, calls } = fakeRunner();

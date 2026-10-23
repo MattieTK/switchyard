@@ -17,7 +17,7 @@ import {
   runScriptCommand,
 } from "../translate/package-manager.ts";
 import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
-import type { Adapter, ConvertContext, NextCachePreset } from "./types.ts";
+import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
 // choice is passed explicitly. "kv" is the closest match to Vercel's ISR data cache.
@@ -293,6 +293,45 @@ const CF_DETECTED_FRAMEWORKS: Readonly<Record<string, string>> = {
   "@analogjs/platform": "Analog",
 };
 
+// The upgrade applies only the migrations Next.js 16 requires unless the user opted into more.
+function upgradeFlags(options: AdapterOptions): string[] {
+  return [
+    ...(options.adoptionCodemods ? [] : ["--skip-adoption"]),
+    ...(options.eslintMigration ? [] : ["--skip-eslint-upgrade"]),
+  ];
+}
+
+const OPTIONAL_UPGRADE_STEPS = { adoptionCodemods: "Adoption codemods", eslintMigration: "ESLint migration" } as const;
+
+// Names the opt-ins that ran in a failed upgrade, since leaving them out is the user's next try.
+function upgradeError(command: { cmd: string; args: string[] }, result: RunResult, options: AdapterOptions): Error {
+  const chosen = (Object.keys(OPTIONAL_UPGRADE_STEPS) as (keyof typeof OPTIONAL_UPGRADE_STEPS)[])
+    .filter((o) => options[o])
+    .map((o) => OPTIONAL_UPGRADE_STEPS[o]);
+  if (!chosen.length) return new CommandError(command.cmd, command.args, result);
+  return new Error(
+    `The Next.js upgrade failed with ${chosen.join(" and ")} chosen. Check the log, or build the plan again without ${chosen.length === 1 ? "it" : "them"}.`,
+  );
+}
+
+// Next.js 16 removed next lint, so scripts that run it fail until the ESLint migration runs.
+async function nextLintWarnings(dir: string): Promise<string[]> {
+  const scripts = (await readPackageJsonScripts(dir)) ?? {};
+  const linting = Object.entries(scripts).filter(([, command]) => /\bnext\s+lint\b/.test(command));
+  return linting.length
+    ? [
+        `The ${linting.map(([name]) => name).join(", ")} script${linting.length === 1 ? " runs" : "s run"} next lint, which Next.js 16 removed. Choose ESLint migration under Upgrade options, or change ${linting.length === 1 ? "it" : "them"} to run eslint directly.`,
+      ]
+    : [];
+}
+
+async function readPackageJsonScripts(dir: string): Promise<Record<string, string> | null> {
+  const text = await readFile(join(dir, "package.json"), "utf8").catch(() => null);
+  if (text === null) return null;
+  const scripts = (JSON.parse(text) as { scripts?: unknown }).scripts;
+  return scripts && typeof scripts === "object" ? (scripts as Record<string, string>) : null;
+}
+
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
   label: "Next.js (vinext)",
@@ -344,9 +383,14 @@ export const nextjsAdapter: Adapter = {
       // The upgrade reads the installed Next.js and React versions, so dependencies go in first.
       const install = installCommand(ctx.pm);
       await runOrThrow(ctx.run, install.cmd, install.args, { cwd: ctx.dir, onLine: ctx.log, env });
-      const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, ["upgrade", NEXT_UPGRADE_VERSION, "--yes"]);
+      const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, [
+        "upgrade",
+        NEXT_UPGRADE_VERSION,
+        "--yes",
+        ...upgradeFlags(ctx.options),
+      ]);
       const upgraded = await withYarn1Wrapper(ctx.pm, ctx.run, ctx.dir, (pathPrefix) =>
-        runOrThrow(ctx.run, upgrade.cmd, upgrade.args, {
+        ctx.run(upgrade.cmd, upgrade.args, {
           cwd: ctx.dir,
           onLine: ctx.log,
           // The codemod picks a package manager from the user agent before the lockfile,
@@ -355,9 +399,11 @@ export const nextjsAdapter: Adapter = {
           ...(pathPrefix ? { pathPrefix } : {}),
         }),
       );
+      if (upgraded.code !== 0) throw upgradeError(upgrade, upgraded, ctx.options);
       warnings.push(
         `Switchyard upgraded Next.js from ${old.range} to ${NEXT_UPGRADE_VERSION} with the official Next.js codemods. The codemods don't cover every breaking change, so review the pull request and test the preview before switching traffic.`,
         ...incompatibleDependencyWarnings(upgraded.output),
+        ...(ctx.options.eslintMigration ? [] : await nextLintWarnings(ctx.dir)),
       );
     }
     const { cmd, args } = dlxCommand(ctx.pm, `vinext@${VINEXT_VERSION}`, [

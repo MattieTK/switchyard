@@ -101,6 +101,32 @@ describe("convertStep", () => {
     expect(ctx.outputs).toEqual({ projectDir: repoDir, warnings: '["heads up"]' });
   });
 
+  it("passes the chosen upgrade options to the adapter, and defaults for older job files", async () => {
+    const seen: unknown[] = [];
+    const adapter = {
+      convert: async (c: { dir: string; options: unknown }) => {
+        seen.push(c.options);
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    for (const options of [
+      { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true, switchToPnpm: false },
+      undefined,
+    ]) {
+      const { ctx } = makeContext({
+        plan: { ...(options ? { options } : {}) },
+        deps: { run: fakeRunner().run, adapter: () => adapter },
+        outputs: { clone: { dir: await makeTempDir() } },
+      });
+      await convertStep.run(ctx);
+    }
+    expect(seen).toEqual([
+      { nextCache: "kv", adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true },
+      { nextCache: "kv", adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false },
+    ]);
+  });
+
   it("doesn't write development values to a .dev.vars that is tracked in git", async () => {
     const repoDir = await makeTempDir();
     await writeFile(join(repoDir, ".dev.vars"), "COMMITTED='original'\n");

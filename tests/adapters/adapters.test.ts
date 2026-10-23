@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextjsAdapter } from "../../src/adapters/nextjs.ts";
@@ -209,6 +209,64 @@ old-lib 1.0.0
     const { run, calls } = fakeRunner();
     await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
     expect(calls.map((c) => c.args[1])).toEqual(["vinext@1.1.0"]);
+  });
+
+  describe("vinext's peer dependencies", () => {
+    const install = async (folder: string, name: string, manifest: object) => {
+      await mkdir(join(folder, "node_modules", name), { recursive: true });
+      await writeFile(join(folder, "node_modules", name, "package.json"), JSON.stringify(manifest));
+    };
+    const PEERS = { react: "^19.3.1", "react-dom": "^19.3.1", "@vitejs/plugin-react": "^5.1.4 || ^6.0.0", "@mdx-js/rollup": "^3.0.0" };
+    const convertAfterInit = (pm: "pnpm" | "npm", at = dir) => {
+      const { run, calls } = fakeRunner(async (_cmd, args) => {
+        // vinext init installs vinext, as the real one does.
+        if (args.includes("init")) await install(at, "vinext", { peerDependencies: PEERS });
+        return { code: 0, output: "" };
+      });
+      return { calls, result: nextjsAdapter.convert({ dir, pm, run, log: () => {}, options: { nextCache: "kv" } }) };
+    };
+
+    it("updates each installed peer that is outside vinext's range", async () => {
+      await install(dir, "react", { version: "19.2.8" });
+      await install(dir, "react-dom", { version: "19.2.8" });
+      await install(dir, "@vitejs/plugin-react", { version: "5.0.0" });
+      const { calls, result } = convertAfterInit("pnpm");
+      const r = await result;
+      expect(calls.at(-1)).toMatchObject({
+        cmd: "pnpm",
+        args: ["add", "react@^19.3.1", "react-dom@^19.3.1", "@vitejs/plugin-react@^5.1.4 || ^6.0.0"],
+        opts: { cwd: dir, env: { pnpm_config_strict_dep_builds: "false" } },
+      });
+      expect(r.warnings).toEqual([
+        "Switchyard updated react from 19.2.8 to ^19.3.1, because vinext needs a version in that range. Check the app still works with it.",
+        "Switchyard updated react-dom from 19.2.8 to ^19.3.1, because vinext needs a version in that range. Check the app still works with it.",
+        "Switchyard updated @vitejs/plugin-react from 5.0.0 to ^5.1.4 || ^6.0.0, because vinext needs a version in that range. Check the app still works with it.",
+      ]);
+    });
+
+    it("leaves peers in range, and peers the app doesn't have, alone", async () => {
+      await install(dir, "react", { version: "19.3.1" });
+      await install(dir, "react-dom", { version: "19.4.0-canary-abc" });
+      await install(dir, "@vitejs/plugin-react", { version: "6.1.2" });
+      const { calls, result } = convertAfterInit("pnpm");
+      expect((await result).warnings).toEqual([]);
+      expect(calls.map((c) => c.args[0])).toEqual(["dlx"]);
+    });
+
+    it("finds peers installed at a workspace root", async () => {
+      const root = dir;
+      dir = join(root, "apps", "web");
+      await mkdir(dir, { recursive: true });
+      await install(root, "react", { version: "19.1.0" });
+      const { calls, result } = convertAfterInit("npm", root);
+      await result;
+      expect(calls.at(-1)).toMatchObject({
+        cmd: "npm",
+        args: ["install", "react@^19.3.1"],
+        opts: { env: { npm_config_legacy_peer_deps: "true" } },
+      });
+      dir = root;
+    });
   });
 
   it("fails when vinext init fails", async () => {

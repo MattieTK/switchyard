@@ -1,12 +1,19 @@
 import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { satisfies, validRange } from "semver";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, runOrThrow } from "../exec.ts";
 import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
-import { dlxCommand, installCommand, installEnv, type PackageManager } from "../translate/package-manager.ts";
+import {
+  addCommand,
+  dlxCommand,
+  installCommand,
+  installEnv,
+  type PackageManager,
+} from "../translate/package-manager.ts";
 import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
-import type { Adapter, NextCachePreset } from "./types.ts";
+import type { Adapter, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
 // choice is passed explicitly. "kv" is the closest match to Vercel's ISR data cache.
@@ -113,6 +120,47 @@ async function readPackageJson(dir: string): Promise<PackageJson | null> {
   }
 }
 
+interface InstalledPackage {
+  version?: string;
+  peerDependencies?: Record<string, string>;
+}
+
+// The package.json Node would load for name from dir, looking in parent folders too,
+// since workspaces often install packages at the repository root.
+async function installedPackage(dir: string, name: string): Promise<InstalledPackage | null> {
+  for (let folder = dir; ; folder = dirname(folder)) {
+    try {
+      return JSON.parse(await readFile(join(folder, "node_modules", name, "package.json"), "utf8")) as InstalledPackage;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (dirname(folder) === folder) return null;
+  }
+}
+
+// vinext init installs the newest vinext 1.x, whose peer dependencies (React, the Vite
+// plugins) can be newer than the app has, and it doesn't update them. vinext's App Router
+// build stops below its React range, for example. Updates each installed peer that is
+// outside vinext's range and returns a warning for each.
+async function updateVinextPeers(ctx: ConvertContext, env: Record<string, string>): Promise<string[]> {
+  const peers = Object.entries((await installedPackage(ctx.dir, "vinext"))?.peerDependencies ?? {});
+  const outdated: { name: string; version: string; range: string }[] = [];
+  for (const [name, range] of peers) {
+    const version = (await installedPackage(ctx.dir, name))?.version;
+    // A peer the app doesn't have is optional for it, so it's left out.
+    if (version && validRange(range) && !satisfies(version, range, { includePrerelease: true })) {
+      outdated.push({ name, version, range });
+    }
+  }
+  if (!outdated.length) return [];
+  const add = addCommand(ctx.pm, outdated.map((p) => `${p.name}@${p.range}`));
+  await runOrThrow(ctx.run, add.cmd, add.args, { cwd: ctx.dir, onLine: ctx.log, env });
+  return outdated.map(
+    (p) =>
+      `Switchyard updated ${p.name} from ${p.version} to ${p.range}, because vinext needs a version in that range. Check the app still works with it.`,
+  );
+}
+
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
   label: "Next.js (vinext)",
@@ -161,6 +209,7 @@ export const nextjsAdapter: Adapter = {
       "--image-optimization=cloudflare-images",
     ]);
     const result = await runOrThrow(ctx.run, cmd, args, { cwd: ctx.dir, onLine: ctx.log, env });
+    warnings.push(...(await updateVinextPeers(ctx, env)));
     if (result.output.includes("approve-builds")) {
       warnings.push(
         "pnpm blocked some dependency build scripts during install. If the Cloudflare build fails, run `pnpm approve-builds` in the project and commit the result.",

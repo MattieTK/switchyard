@@ -17,6 +17,22 @@ describe("findUndeclaredImports", () => {
     ]);
   });
 
+  it("finds packages Node couldn't load for an installed package", () => {
+    const output = `[vinext] Failed to load next.config.js: Cannot find module 'webpack'
+Require stack:
+- /w/app/node_modules/workbox-webpack-plugin/build/generate-sw.js
+- /w/app/node_modules/next-pwa/index.js
+- /w/app/next.config.js
+Error: Cannot find module 'tsconfig-paths/register'
+Require stack:
+- /w/app/next.config.js
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'picocolors' imported from /w/app/node_modules/.pnpm/a@1.0.0/node_modules/a/dist/index.mjs`;
+    expect(findUndeclaredImports(output)).toEqual([
+      { packageName: "webpack", importer: "workbox-webpack-plugin" },
+      { packageName: "picocolors", importer: "a" },
+    ]);
+  });
+
   it("finds nothing in an unrelated failure", () => {
     expect(findUndeclaredImports("Type error: x is not assignable to y")).toEqual([]);
   });

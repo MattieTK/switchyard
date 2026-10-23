@@ -43,7 +43,10 @@ export interface Adapter {
   // Binding names the converter creates, which env vars must not reuse.
   reservedBindings: readonly string[];
   matches(input: DetectInput): boolean;
-  // Things the user should know before approving, shown with the plan.
-  planWarnings?(packageJson: PackageJson | null): string[];
+  // Project files planWarnings reads, fetched when the project has them.
+  planFiles?: readonly string[];
+  // Things the user should know before approving, shown with the plan. files holds the
+  // planFiles the project has, by name.
+  planWarnings?(packageJson: PackageJson | null, files: Readonly<Record<string, string>>): string[];
   convert(ctx: ConvertContext): Promise<ConvertResult>;
 }

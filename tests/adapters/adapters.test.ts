@@ -108,14 +108,33 @@ describe("nextjsAdapter", () => {
   });
 
   it("warns in the plan when the app's Next.js is older than 16", () => {
-    const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }) ?? [];
+    const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }, {}) ?? [];
     expect(rest).toEqual([]);
     expect(warning).toBe(
       "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
     );
-    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "^16.1.0" } })).toEqual([]);
-    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "canary" } })).toEqual([]);
-    expect(nextjsAdapter.planWarnings?.(null)).toEqual([]);
+    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "^16.1.0" } }, {})).toEqual([]);
+    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "canary" } }, {})).toEqual([]);
+    expect(nextjsAdapter.planWarnings?.(null, {})).toEqual([]);
+  });
+
+  it("warns in the plan about Hono and standalone output, which the Cloudflare build can't handle yet", () => {
+    const [frameworks] =
+      nextjsAdapter.planWarnings?.({ dependencies: { next: "16.2.0", hono: "^4.9.6" }, devDependencies: { astro: "5" } }, {}) ?? [];
+    expect(frameworks).toContain("depends on hono, astro, so the Cloudflare build tool (cf) finds Hono, Astro as well as Next.js and Vite");
+    // Packages cf doesn't treat as a framework of their own.
+    expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "16.2.0", "react-router": "7", express: "5" } }, {})).toEqual([]);
+
+    const pkg = { dependencies: { next: "16.2.0" } };
+    for (const config of [
+      'const nextConfig = {\n  output: "standalone",\n};\nexport default nextConfig;\n',
+      "module.exports = { output: process.env.E2E_BUILD === 'true' ? undefined : 'standalone' }",
+      "const nextConfig = {};\nnextConfig.output = `standalone`;\n",
+    ]) {
+      const [standalone] = nextjsAdapter.planWarnings?.(pkg, { "next.config.mjs": config }) ?? [];
+      expect(standalone).toContain('next.config sets output: "standalone"');
+    }
+    expect(nextjsAdapter.planWarnings?.(pkg, { "next.config.ts": "output: 'export', basePath: '/standalone'" })).toEqual([]);
   });
 
   it("installs, upgrades Next.js with the codemods, then runs vinext for an app older than 16", async () => {

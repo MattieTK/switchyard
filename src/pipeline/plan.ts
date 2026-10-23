@@ -81,6 +81,8 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   let pkg: PackageJson | null = null;
   let files: string[] = [];
   let vercelJsonRaw: string | null = null;
+  // Files in the project's own folder, which the adapter's planFiles are looked up in.
+  let projectFiles: string[] = [];
 
   const link = project.link;
   if (!link?.org || !link.repo) {
@@ -107,6 +109,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       pkg = parsePackageJson(pkgText);
       vercelJsonRaw = vercelJson;
       files = [...(rootFiles ?? []), ...(dirFiles ?? [])];
+      projectFiles = (rootDirectory ? dirFiles : rootFiles) ?? [];
       if (!pkg) blockers.push(`No readable package.json at ${rootDirectory || "the repository root"} on ${productionBranch}.`);
     } catch (e) {
       if (e instanceof ApiError && !e.auth) blockers.push(e.message);
@@ -120,7 +123,15 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   const dependencies = allDependencies(pkg);
 
   const workerName = sanitizeWorkerName(project.name);
-  const warnings: string[] = [...(adapter?.planWarnings?.(pkg) ?? [])];
+  const planFiles: Record<string, string> = {};
+  if (repo && adapter?.planFiles) {
+    const { owner, name, productionBranch } = repo;
+    for (const file of adapter.planFiles.filter((f) => projectFiles.includes(f))) {
+      const text = await d.github.getFile(owner, name, rootDirectory ? `${rootDirectory}/${file}` : file, productionBranch);
+      if (text !== null) planFiles[file] = text;
+    }
+  }
+  const warnings: string[] = [...(adapter?.planWarnings?.(pkg, planFiles) ?? [])];
   if (await d.cloudflare.getWorkerTag(d.accountId, workerName)) {
     warnings.push(
       `A Worker called ${workerName} already exists on this Cloudflare account. Deploying will replace its code and secrets. Choose another name to keep it.`,

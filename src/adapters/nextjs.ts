@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, runOrThrow } from "../exec.ts";
 import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
-import { dlxCommand, installCommand, type PackageManager } from "../translate/package-manager.ts";
+import { dlxCommand, installCommand, installEnv, type PackageManager } from "../translate/package-manager.ts";
 import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
 import type { Adapter, NextCachePreset } from "./types.ts";
 
@@ -129,16 +129,15 @@ export const nextjsAdapter: Adapter = {
   },
   async convert(ctx) {
     const warnings: string[] = [];
-    const isNpm = ctx.pm === "npm";
-    if (isNpm && (await ensureLegacyPeerDeps(ctx.dir))) warnings.push(LEGACY_PEER_DEPS_WARNING);
-    const npmEnv: Record<string, string> = isNpm ? { npm_config_legacy_peer_deps: "true" } : {};
+    if (ctx.pm === "npm" && (await ensureLegacyPeerDeps(ctx.dir))) warnings.push(LEGACY_PEER_DEPS_WARNING);
+    const env = installEnv(ctx.pm);
 
     const old = needsUpgrade(await readPackageJson(ctx.dir));
     if (old) {
       if (old.major < 11) await pinNext11(ctx.dir);
       // The upgrade reads the installed Next.js and React versions, so dependencies go in first.
       const install = installCommand(ctx.pm);
-      await runOrThrow(ctx.run, install.cmd, install.args, { cwd: ctx.dir, onLine: ctx.log, env: npmEnv });
+      await runOrThrow(ctx.run, install.cmd, install.args, { cwd: ctx.dir, onLine: ctx.log, env });
       const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, ["upgrade", NEXT_UPGRADE_VERSION, "--yes"]);
       const upgraded = await withYarn1Wrapper(ctx.pm, ctx.run, ctx.dir, (pathPrefix) =>
         runOrThrow(ctx.run, upgrade.cmd, upgrade.args, {
@@ -146,7 +145,7 @@ export const nextjsAdapter: Adapter = {
           onLine: ctx.log,
           // The codemod picks a package manager from the user agent before the lockfile,
           // and npx would otherwise make it npm.
-          env: { ...npmEnv, npm_config_user_agent: `${ctx.pm}/switchyard` },
+          env: { ...env, npm_config_user_agent: `${ctx.pm}/switchyard` },
           ...(pathPrefix ? { pathPrefix } : {}),
         }),
       );
@@ -161,11 +160,7 @@ export const nextjsAdapter: Adapter = {
       ...NEXT_CACHE_FLAGS[ctx.options.nextCache],
       "--image-optimization=cloudflare-images",
     ]);
-    const result = await runOrThrow(ctx.run, cmd, args, {
-      cwd: ctx.dir,
-      onLine: ctx.log,
-      ...(isNpm ? { env: npmEnv } : {}),
-    });
+    const result = await runOrThrow(ctx.run, cmd, args, { cwd: ctx.dir, onLine: ctx.log, env });
     if (result.output.includes("approve-builds")) {
       warnings.push(
         "pnpm blocked some dependency build scripts during install. If the Cloudflare build fails, run `pnpm approve-builds` in the project and commit the result.",

@@ -17,6 +17,21 @@ export function installCommand(pm: PackageManager): { cmd: string; args: string[
   return { cmd: pm, args: ["install"] };
 }
 
+// Settings for every command that can install packages during a conversion. npm rejects
+// vinext's React peer ranges (ERESOLVE) without legacy-peer-deps. pnpm 11 and later stop
+// the install when they skip a dependency's build script, which earlier versions only
+// warned about; pnpm 11 reads pnpm_config_* rather than npm_config_* variables.
+export function installEnv(pm: PackageManager): Record<string, string> {
+  switch (pm) {
+    case "npm":
+      return { npm_config_legacy_peer_deps: "true" };
+    case "pnpm":
+      return { pnpm_config_strict_dep_builds: "false" };
+    default:
+      return {};
+  }
+}
+
 // Adds packages to the project's dependencies.
 export function addCommand(pm: PackageManager, packages: readonly string[]): { cmd: string; args: string[] } {
   return { cmd: pm, args: [pm === "npm" ? "install" : "add", ...packages] };

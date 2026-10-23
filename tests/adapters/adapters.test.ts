@@ -73,7 +73,7 @@ describe("nextjsAdapter", () => {
     const { run, calls } = fakeRunner();
     const r = await nextjsAdapter.convert({ dir, pm: "npm", run, log: () => {}, options: { nextCache: "kv" } });
     expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe("legacy-peer-deps=true\n");
-    expect(calls[0]?.opts).toMatchObject({ cwd: dir, env: { npm_config_legacy_peer_deps: "true" } });
+    expect(calls[0]?.opts).toMatchObject({ cwd: dir, env: { npm_config_legacy_peer_deps: "true", npm_config_engine_strict: "false" } });
     expect(r.warnings).toEqual([LEGACY_PEERS_WARNING]);
   });
 

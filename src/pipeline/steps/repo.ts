@@ -115,6 +115,18 @@ async function updateToolchainFiles(
   return warnings;
 }
 
+// Removes lockfiles of package managers the project doesn't use. vinext and cf choose a
+// package manager from the lockfiles they find, so a stray yarn.lock in a pnpm project
+// makes them run Yarn. Returns a warning when anything was removed.
+async function removeOtherLockfiles(dir: string, pm: PackageManager): Promise<string | null> {
+  const other = [...Object.values(LOCKFILES).flat(), "bun.lockb"].filter(
+    (f) => !LOCKFILES[pm].includes(f) && !(pm === "bun" && f === "bun.lockb") && existsSync(join(dir, f)),
+  );
+  if (!other.length) return null;
+  for (const f of other) await rm(join(dir, f), { force: true });
+  return `The project had lockfiles for more than one package manager. Switchyard kept ${pm}'s, the one it detected, and removed ${other.join(", ")}, because the Cloudflare build tools could otherwise pick another package manager.`;
+}
+
 // Keeps a Yarn 1 project on Yarn 1 everywhere by naming it in package.json. Returns a
 // warning when package.json changed.
 async function pinYarn1(projectDir: string, repoDir: string): Promise<string | null> {
@@ -204,6 +216,7 @@ export const convertStep: Step = {
     const dir = projectDirFor(repoDir, repo.rootDirectory);
     const switchWarnings = plan.switchedFrom ? await switchToPnpm(ctx, dir, plan.switchedFrom) : [];
     const yarnWarning = plan.packageManager === "yarn" ? await pinYarn1(dir, repoDir) : null;
+    const lockWarning = await removeOtherLockfiles(dir, plan.packageManager);
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
@@ -220,6 +233,7 @@ export const convertStep: Step = {
     const warnings = [
       ...switchWarnings,
       ...(yarnWarning ? [yarnWarning] : []),
+      ...(lockWarning ? [lockWarning] : []),
       ...result.warnings,
       ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
     ];

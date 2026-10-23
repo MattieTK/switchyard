@@ -557,6 +557,28 @@ framer-motion 7.3.5
     });
   });
 
+  it("creates the empty-stub.js vinext points native modules at, which vinext init leaves out", async () => {
+    const config = `import path from "node:path";
+export default defineConfig({
+  resolve: {
+    alias: {
+      "sharp": path.resolve(__dirname, "empty-stub.js"),
+      "satori": path.resolve(__dirname, "empty-stub.js"),
+    },
+  },
+});
+`;
+    const { run } = fakeRunner(async (_cmd, args) => {
+      if (args.includes("init")) await writeFile(join(dir, "vite.config.ts"), config);
+      return { code: 0, output: "" };
+    });
+    const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(await readFile(join(dir, "empty-stub.js"), "utf8")).toContain("export default {};");
+    expect(r.warnings).toContain(
+      "vinext replaces sharp, satori with an empty module (empty-stub.js), because they need Node.js. Code that calls them at runtime won't work on Workers.",
+    );
+  });
+
   it("makes output: standalone apply only outside the Cloudflare build", async () => {
     for (const [file, before, after] of [
       ["next.config.mjs", 'export default { output: "standalone" };\n', 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n'],

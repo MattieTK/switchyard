@@ -8,6 +8,7 @@ import {
   execCommand,
   execString,
   installCommand,
+  packageManagerVersionVariable,
   pnpmSwitchOffer,
 } from "../../src/translate/package-manager.ts";
 import { detectStorage } from "../../src/translate/storage.ts";
@@ -73,6 +74,20 @@ describe("package manager", () => {
     // Yarn 1 has no dlx, and npx works whichever Yarn the project uses.
     expect(dlxCommand("yarn", "vinext@1.1.0", ["init"])).toEqual({ cmd: "npx", args: ["--yes", "vinext@1.1.0", "init"] });
     expect(dlxCommand("bun", "vinext@1.1.0", ["init"])).toEqual({ cmd: "bunx", args: ["vinext@1.1.0", "init"] });
+  });
+});
+
+describe("packageManagerVersionVariable", () => {
+  it("gives the Workers Builds variable for the version packageManager asks for", () => {
+    expect(packageManagerVersionVariable("pnpm@11.27.1+sha512.abc")).toEqual({ name: "PNPM_VERSION", value: "11.27.1" });
+    expect(packageManagerVersionVariable("yarn@1.22.22")).toEqual({ name: "YARN_VERSION", value: "1.22.22" });
+    expect(packageManagerVersionVariable("bun@1.4.3")).toEqual({ name: "BUN_VERSION", value: "1.4.3" });
+  });
+
+  it("gives nothing for npm, a missing field or a field without a version", () => {
+    expect(packageManagerVersionVariable("npm@10.9.2")).toBeNull();
+    expect(packageManagerVersionVariable(undefined)).toBeNull();
+    expect(packageManagerVersionVariable("pnpm")).toBeNull();
   });
 });
 

@@ -51,6 +51,19 @@ export function execCommand(pm: PackageManager, bin: string, args: readonly stri
   }
 }
 
+// Workers Builds picks a package manager's version from these build variables. npm has none,
+// because it comes with Node.js.
+const VERSION_VARIABLES: Partial<Record<PackageManager, string>> = { pnpm: "PNPM_VERSION", yarn: "YARN_VERSION", bun: "BUN_VERSION" };
+
+// The Workers Builds variable that gives the version package.json's packageManager field asks
+// for, such as PNPM_VERSION=11.27.1 for "pnpm@11.27.1+sha512.…", or null when there is none.
+export function packageManagerVersionVariable(packageManager: string | undefined): { name: string; value: string } | null {
+  const [name = "", version = ""] = packageManager?.split("@") ?? [];
+  const variable = VERSION_VARIABLES[name as PackageManager];
+  const exact = version.split("+")[0];
+  return variable && exact ? { name: variable, value: exact } : null;
+}
+
 // Runs one of the project's package.json scripts.
 export function runScriptCommand(pm: PackageManager, script: string): { cmd: string; args: string[] } {
   return { cmd: pm, args: ["run", script] };

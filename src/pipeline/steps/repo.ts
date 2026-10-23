@@ -5,7 +5,13 @@ import { gitAuthEnv } from "../../auth/github.ts";
 import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
-import { MIN_NODE_MAJOR, NODE_VERSION_FILES, raiseNodeVersion } from "../../codegen/toolchain-files.ts";
+import {
+  approveBuilds,
+  MIN_NODE_MAJOR,
+  NODE_VERSION_FILES,
+  raiseNodeVersion,
+  undecidedBuilds,
+} from "../../codegen/toolchain-files.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
@@ -56,9 +62,14 @@ export const cloneStep: Step = {
 };
 
 // Workers Builds installs and builds with the files in the repository, so a Node.js pin
-// that cf can't run on fails there too. Monorepos can keep these files at the repository
-// root or in the project folder.
-async function updateToolchainFiles(projectDir: string, repoDir: string): Promise<string[]> {
+// that cf can't run on, or a pnpm build decision left open, fails there too. Monorepos can
+// keep these files at the repository root or in the project folder. installedBefore says
+// whether the production branch's lockfile already had a package.
+async function updateToolchainFiles(
+  projectDir: string,
+  repoDir: string,
+  installedBefore: (name: string) => Promise<boolean>,
+): Promise<string[]> {
   const warnings: string[] = [];
   const folders = [...new Set([projectDir, repoDir])];
   const read = (path: string) => readFile(path, "utf8").catch(() => null);
@@ -71,6 +82,28 @@ async function updateToolchainFiles(projectDir: string, repoDir: string): Promis
       await writeFile(path, raised.text);
       warnings.push(
         `Switchyard changed ${relative(repoDir, path)} from ${raised.from} to ${MIN_NODE_MAJOR}, because Cloudflare's build tools need Node.js ${MIN_NODE_MAJOR} or later and Workers Builds uses the version in this file. Check the app still works on Node.js ${MIN_NODE_MAJOR}.`,
+      );
+    }
+    const workspacePath = join(folder, "pnpm-workspace.yaml");
+    const workspace = await read(workspacePath);
+    if (workspace === null) continue;
+    const file = relative(repoDir, workspacePath);
+    // Packages the conversion added (vinext's toolchain, such as workerd, and whatever the
+    // Next.js upgrade brings) are part of Switchyard's change, so their build scripts are
+    // allowed. The project's own packages stay the user's decision.
+    const undecided = undecidedBuilds(workspace);
+    const added: string[] = [];
+    const existing: string[] = [];
+    for (const name of undecided) (await installedBefore(name) ? existing : added).push(name);
+    if (added.length) {
+      await writeFile(workspacePath, approveBuilds(workspace, added));
+      warnings.push(
+        `Switchyard allowed the build scripts of ${added.join(", ")} in ${file}. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.`,
+      );
+    }
+    if (existing.length) {
+      warnings.push(
+        `pnpm skipped the build scripts of ${existing.join(", ")} and marked them for review in ${file}. pnpm stops installing until each is set to true or false, so decide before merging.`,
       );
     }
   }
@@ -101,7 +134,10 @@ export const convertStep: Step = {
       log: ctx.log,
       options: { nextCache: plan.nextCache },
     });
-    const warnings = [...result.warnings, ...(await updateToolchainFiles(dir, repoDir))];
+    const warnings = [
+      ...result.warnings,
+      ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
+    ];
     for (const w of warnings) ctx.log(`Warning: ${w}`);
 
     const configPath = join(dir, "cloudflare.config.ts");

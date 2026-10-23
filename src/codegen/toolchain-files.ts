@@ -33,3 +33,19 @@ export function raiseNodeVersion(text: string): { from: string; text: string } |
   const major = pinnedMajor(from);
   return major !== null && major < MIN_NODE_MAJOR ? { from, text: `${MIN_NODE_MAJOR}\n` } : null;
 }
+
+// pnpm 11 lists a dependency whose build script it skipped under allowBuilds in
+// pnpm-workspace.yaml with this value, and installs fail until someone decides.
+const UNDECIDED = /^(\s+)(['"]?)([^\s'":]+)\2:\s*set this to true or false\s*$/gm;
+
+// The packages pnpm-workspace.yaml marks for a build-script decision.
+export function undecidedBuilds(text: string): string[] {
+  return [...text.matchAll(UNDECIDED)].map((m) => m[3] ?? "");
+}
+
+// Allows the build scripts of the given undecided packages.
+export function approveBuilds(text: string, names: readonly string[]): string {
+  return text.replace(UNDECIDED, (line, indent: string, quote: string, name: string) =>
+    names.includes(name) ? `${indent}${quote}${name}${quote}: true` : line,
+  );
+}

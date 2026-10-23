@@ -288,8 +288,11 @@ describe("convertStep", () => {
       expect(calls.find((c) => c.args[0] === "import")).toMatchObject({ cmd: "pnpm", opts: { cwd: repoDir } });
       await expect(stat(join(repoDir, "yarn.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(JSON.parse(await readFile(join(repoDir, "package.json"), "utf8")).packageManager).toBe("pnpm@11.27.1");
+      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe("shamefullyHoist: true\n");
+      expect(await readFile(join(repoDir, ".npmrc"), "utf8")).toBe("shamefully-hoist=true\n");
       expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
         "Switchyard moved the project from yarn to pnpm with pnpm import, which keeps the dependency versions from yarn.lock, and set packageManager to pnpm@11.27.1.",
+        "Switchyard turned on shamefullyHoist in pnpm-workspace.yaml and .npmrc, so packages the app imports without declaring stay reachable, as they were with yarn. Once package.json lists everything the app imports, you can remove it.",
         "The build script calls yarn or bun directly. Change it to use pnpm.",
         "pnpm doesn't use .yarnrc.yml. Remove it once the move is settled.",
       ]);

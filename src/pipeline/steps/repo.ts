@@ -151,6 +151,19 @@ async function switchToPnpm(ctx: StepContext, dir: string, from: PackageManager)
     }
   }
   for (const lock of locks) await rm(join(dir, lock), { force: true });
+  // npm, Yarn and bun put every package at the top of node_modules, so apps often import
+  // packages they don't declare. Hoisting keeps those working under pnpm. pnpm 11 reads the
+  // setting from pnpm-workspace.yaml and pnpm 10, Workers Builds' default, from .npmrc.
+  const workspacePath = join(dir, "pnpm-workspace.yaml");
+  const workspace = await readFile(workspacePath, "utf8").catch(() => "");
+  if (!/^shamefullyHoist:/m.test(workspace)) {
+    await writeFile(workspacePath, `${workspace}${workspace && !workspace.endsWith("\n") ? "\n" : ""}shamefullyHoist: true\n`);
+  }
+  const npmrcPath = join(dir, ".npmrc");
+  const npmrc = await readFile(npmrcPath, "utf8").catch(() => "");
+  if (!/^\s*shamefully-hoist\s*=/m.test(npmrc)) {
+    await writeFile(npmrcPath, `${npmrc}${npmrc && !npmrc.endsWith("\n") ? "\n" : ""}shamefully-hoist=true\n`);
+  }
   const version = (await ctx.deps.run("pnpm", ["--version"], { cwd: dir })).stdout.trim();
   const manifestPath = join(dir, "package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { packageManager?: string; scripts?: Record<string, string> };
@@ -160,6 +173,7 @@ async function switchToPnpm(ctx: StepContext, dir: string, from: PackageManager)
     imported
       ? `Switchyard moved the project from ${from} to pnpm with pnpm import, which keeps the dependency versions from ${imported}, and set packageManager to pnpm@${version}.`
       : `Switchyard moved the project from ${from} to pnpm and set packageManager to pnpm@${version}. ${locks.length ? `${locks.join(" and ")} can't be imported` : "There was no lockfile"}, so pnpm chose dependency versions again. Test the app before merging.`,
+    `Switchyard turned on shamefullyHoist in pnpm-workspace.yaml and .npmrc, so packages the app imports without declaring stay reachable, as they were with ${from}. Once package.json lists everything the app imports, you can remove it.`,
   ];
   const otherManagers = Object.entries(manifest.scripts ?? {}).filter(([, command]) => /(^|[\s&|;(])(yarn|bunx?)(\s|$)/.test(command));
   if (otherManagers.length) {

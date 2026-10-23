@@ -16,7 +16,7 @@ import {
   type PackageManager,
   runScriptCommand,
 } from "../translate/package-manager.ts";
-import { type LatestRelease, planFlaggedUpdates } from "./flagged-packages.ts";
+import { planFlaggedUpdates, type Release } from "./flagged-packages.ts";
 import { type IncompatibleDependency, incompatibleDependencies, incompatibleDependencyWarning } from "./next-codemod-output.ts";
 import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
@@ -233,24 +233,29 @@ async function updateVinextPeers(ctx: ConvertContext, env: Record<string, string
   );
 }
 
-// The registry's latest release of a package, or null when it can't be read. npm comes with
-// Node and reads the project's .npmrc, so private registries work too. With more than one
-// field npm prints an object, but only a version string when the package has no peers.
-async function latestRelease(ctx: ConvertContext, name: string): Promise<LatestRelease | null> {
-  const result = await ctx.run("npm", ["view", `${name}@latest`, "version", "peerDependencies", "--json"], { cwd: ctx.dir });
-  if (result.code !== 0) return null;
+// The registry's releases of a package after version, or null when they can't be read. npm
+// comes with Node and reads the project's .npmrc, so private registries work too. It prints a
+// list for several releases, an object for one, and only the version string for a release
+// without peers, and fails with "No match found" when there is none.
+async function newerReleases(ctx: ConvertContext, name: string, version: string): Promise<Release[] | null> {
+  const result = await ctx.run("npm", ["view", `${name}@>${version}`, "version", "peerDependencies", "--json"], { cwd: ctx.dir });
+  if (result.code !== 0) return result.stdout.includes("No match found") ? [] : null;
+  const toRelease = (entry: unknown): Release | null => {
+    if (typeof entry === "string") return { version: entry };
+    const r = entry as Partial<Release> | null;
+    return typeof r?.version === "string" ? { version: r.version, peerDependencies: r.peerDependencies ?? {} } : null;
+  };
   try {
     const parsed = JSON.parse(result.stdout) as unknown;
-    if (typeof parsed === "string") return { version: parsed };
-    const release = parsed as Partial<LatestRelease> | null;
-    return typeof release?.version === "string" ? { version: release.version, peerDependencies: release.peerDependencies ?? {} } : null;
+    const releases = (Array.isArray(parsed) ? parsed : [parsed]).map(toRelease);
+    return releases.every((r) => r !== null) ? releases : null;
   } catch {
     return null;
   }
 }
 
-// Updates the packages the upgrade flagged as incompatible to their latest release, when
-// that release supports what the upgrade installed. Returns a warning for each package.
+// Updates the packages the upgrade flagged as incompatible to their first release that
+// supports what the upgrade installed. Returns a warning for each package.
 async function updateFlaggedPackages(
   ctx: ConvertContext,
   flagged: readonly IncompatibleDependency[],
@@ -259,9 +264,9 @@ async function updateFlaggedPackages(
 ): Promise<string[]> {
   if (!flagged.length) return [];
   const direct = allDependencies(await readPackageJson(ctx.dir));
-  const latest = new Map<string, LatestRelease | null>();
-  for (const p of flagged) if (p.name in direct) latest.set(p.name, await latestRelease(ctx, p.name));
-  const plan = planFlaggedUpdates(flagged, direct, latest);
+  const newer = new Map<string, Release[] | null>();
+  for (const p of flagged) if (p.name in direct) newer.set(p.name, await newerReleases(ctx, p.name, p.version));
+  const plan = planFlaggedUpdates(flagged, direct, newer);
   if (plan.updates.length) {
     const add = addCommand(ctx.pm, plan.updates.map((u) => `${u.name}@${u.to}`));
     await runInstall(ctx, add, env, warnings, "the update").catch((error: unknown) => {

@@ -38,9 +38,10 @@ Apps below Next.js 16 must be upgraded before vinext can convert them, and Switc
 
 - The upgrade always runs `@next/codemod upgrade 16.4.1 --yes`. It adds `--skip-adoption` unless `adoptionCodemods` is set, and `--skip-eslint-upgrade` unless `eslintMigration` is set.
 - If `eslintMigration` isn't set and a `package.json` script runs `next lint` (removed in Next.js 16), the pull request lists the script and names the option that would migrate it.
-- With `updateFlaggedPackages`, each package in the codemod's incompatible report that `package.json` lists directly is looked up with `npm view <name>@latest version peerDependencies --json`, run in the project folder so `.npmrc` applies.
-  - If the latest release's peer ranges accept every installed version the report names, the package is installed at `^<latest>`, and the pull request says so, noting that major updates can change APIs.
-  - Otherwise, or when the lookup fails, it's left alone with a warning.
+- With `updateFlaggedPackages`, each package in the codemod's incompatible report that `package.json` lists directly is looked up with `npm view "<name>@>{installed}" version peerDependencies --json`, run in the project folder so `.npmrc` applies.
+  - The package moves to `^<the lowest stable release whose peer ranges accept every installed version the report names>`. The first real run showed why the lowest and not the latest: `ai` jumped from 2 to 7 and lost an export the app used.
+  - The pull request lists each update and flags major ones.
+  - When no newer release supports the installed versions, or the lookup fails, the package is left alone with a warning.
   - Indirect packages keep the existing warning.
 - Yarn's release-age retry, which preapproves what Yarn held back and runs again, becomes a general install helper used by `vinext init` and by these updates.
 
@@ -51,8 +52,9 @@ When `plan.switchedFrom` is set, `convertStep` does the following after resettin
 1. Sets up pnpm.
 2. Runs `pnpm import` if the project folder has `package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`. If it fails, the step fails with a message suggesting unticking the option.
 3. Removes `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock` and `bun.lockb` from the project folder.
-4. Sets `packageManager` to `pnpm@<the pnpm version Switchyard used>`.
-5. Reports leftovers: scripts that call `yarn` or `bun`, and Yarn-only files (`.yarnrc.yml`, `.yarn/`, `.pnp.cjs`).
+4. Turns on hoisting: `shamefullyHoist: true` in `pnpm-workspace.yaml` (pnpm 11 and later) and `shamefully-hoist=true` in `.npmrc` (pnpm 10, Workers Builds' default). npm, Yarn and bun hoist every package, so apps often import packages they don't declare. TalentLayer's `lodash` import broke without this.
+5. Sets `packageManager` to `pnpm@<the pnpm version Switchyard used>`.
+6. Reports leftovers: scripts that call `yarn` or `bun`, and Yarn-only files (`.yarnrc.yml`, `.yarn/`, `.pnp.cjs`).
 
 The Yarn 1 pin doesn't run, because the plan's manager is now pnpm.
 

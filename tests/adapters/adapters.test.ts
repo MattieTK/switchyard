@@ -271,9 +271,12 @@ ai 2.2.1
   └── ✕ unmet peer react@"^18.2.0": found 19.3.1
 `;
       const registry: Record<string, { code: number; output: string }> = {
-        "framer-motion@latest": { code: 0, output: '{"version":"12.4.0","peerDependencies":{"react":"^18.0.0 || ^19.0.0"}}' },
-        "recharts@latest": { code: 0, output: '{"version":"2.15.0","peerDependencies":{"react":"^16.0.0 || ^17.0.0 || ^18.0.0"}}' },
-        "ai@latest": { code: 1, output: "npm error 404" },
+        "framer-motion@>7.3.5": {
+          code: 0,
+          output: '[{"version":"10.18.0","peerDependencies":{"react":"^18.0.0"}},{"version":"11.13.5","peerDependencies":{"react":"^18.0.0 || ^19.0.0"}},"12.0.0"]',
+        },
+        "recharts@>2.1.14": { code: 0, output: '{"version":"2.15.0","peerDependencies":{"react":"^16.0.0 || ^17.0.0 || ^18.0.0"}}' },
+        "ai@>2.2.1": { code: 1, output: "npm error 403 Forbidden" },
       };
       await writeFile(
         join(dir, "package.json"),
@@ -285,12 +288,12 @@ ai 2.2.1
         return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
       });
       const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options });
-      expect(calls.find((c) => c.args[0] === "add")?.args).toEqual(["add", "framer-motion@^12.4.0"]);
+      expect(calls.find((c) => c.args[0] === "add")?.args).toEqual(["add", "framer-motion@^11.13.5"]);
       expect(r.warnings).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("Switchyard updated framer-motion from 7.3.5 to ^12.4.0"),
-          expect.stringContaining("Its latest release, 2.15.0, doesn't declare support for react 19.3.1 either"),
-          expect.stringContaining("couldn't look up its latest release"),
+          expect.stringContaining("Switchyard updated framer-motion from 7.3.5 to ^11.13.5, the first release"),
+          expect.stringContaining("No newer release declares support for react 19.3.1 either"),
+          expect.stringContaining("couldn't look up its releases"),
         ]),
       );
 
@@ -304,6 +307,21 @@ ai 2.2.1
       );
     });
 
+    it("counts no newer release as nothing to update to", async () => {
+      const report = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
+advice
+old-lib 1.0.0
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+`;
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "old-lib": "1.0.0" } }));
+      const { run } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return { code: 1, output: '{"error":{"summary":"No match found for version >1.0.0"}}' };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", updateFlaggedPackages: true } });
+      expect(r.warnings).toContainEqual(expect.stringContaining("No newer release declares support"));
+    });
+
     it("names the option when installing the updates fails", async () => {
       const report = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
 advice
@@ -313,6 +331,7 @@ framer-motion 7.3.5
       await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5" } }));
       const { run } = fakeRunner((cmd, args) => {
         if (cmd === "npm" && args[0] === "view") return { code: 0, output: '"12.4.0"' };
+        if (cmd === "npm") return { code: 0, output: "" };
         if (args[0] === "add") return { code: 1, output: "ERR_PNPM_FETCH_404" };
         return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
       });

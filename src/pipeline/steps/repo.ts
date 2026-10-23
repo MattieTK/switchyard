@@ -8,7 +8,7 @@ import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
-import { addCommand, execCommand, type PackageManager } from "../../translate/package-manager.ts";
+import { addCommand, execCommand, installEnv, type PackageManager } from "../../translate/package-manager.ts";
 import type { Step, StepContext } from "../types.ts";
 import { findUndeclaredImports, previousVersion } from "../undeclared-deps.ts";
 import { git, productionBuildEnv, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
@@ -155,11 +155,7 @@ async function repairUndeclaredImports(ctx: StepContext, dir: string, output: st
     pm,
     additions.map((a) => (a.version ? `${a.packageName}@^${a.version}` : a.packageName)),
   );
-  await runOrThrow(ctx.deps.run, add.cmd, add.args, {
-    cwd: dir,
-    onLine: ctx.log,
-    ...(pm === "npm" ? { env: { npm_config_legacy_peer_deps: "true" } } : {}),
-  });
+  await runOrThrow(ctx.deps.run, add.cmd, add.args, { cwd: dir, onLine: ctx.log, env: installEnv(pm) });
   return additions.map(
     (a) =>
       `${a.importer} imports ${a.packageName} without listing it as a dependency, so the build couldn't find it. ` +

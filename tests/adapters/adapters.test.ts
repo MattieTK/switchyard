@@ -54,8 +54,19 @@ describe("nextjsAdapter", () => {
   it("passes no legacy-peer-deps setting and leaves .npmrc alone for pnpm", async () => {
     const { run, calls } = fakeRunner();
     await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
-    expect(calls[0]?.opts?.env).toBeUndefined();
+    expect(calls[0]?.opts?.env).not.toHaveProperty("npm_config_legacy_peer_deps");
     await expect(readFile(join(dir, ".npmrc"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("lets pnpm 11 carry on past blocked build scripts, as earlier versions did", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+    const { run, calls } = fakeRunner();
+    await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(calls.map((c) => [c.args[0], c.opts?.env?.pnpm_config_strict_dep_builds])).toEqual([
+      ["install", "false"],
+      ["dlx", "false"],
+      ["dlx", "false"],
+    ]);
   });
 
   it("creates .npmrc with legacy-peer-deps for npm and passes it to the init run", async () => {

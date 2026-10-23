@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { gitAuthEnv } from "../../auth/github.ts";
 import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
+import { MIN_NODE_MAJOR, NODE_VERSION_FILES, raiseNodeVersion } from "../../codegen/toolchain-files.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
@@ -54,6 +55,28 @@ export const cloneStep: Step = {
   },
 };
 
+// Workers Builds installs and builds with the files in the repository, so a Node.js pin
+// that cf can't run on fails there too. Monorepos can keep these files at the repository
+// root or in the project folder.
+async function updateToolchainFiles(projectDir: string, repoDir: string): Promise<string[]> {
+  const warnings: string[] = [];
+  const folders = [...new Set([projectDir, repoDir])];
+  const read = (path: string) => readFile(path, "utf8").catch(() => null);
+  for (const folder of folders) {
+    for (const name of NODE_VERSION_FILES) {
+      const path = join(folder, name);
+      const text = await read(path);
+      const raised = text === null ? null : raiseNodeVersion(text);
+      if (!raised) continue;
+      await writeFile(path, raised.text);
+      warnings.push(
+        `Switchyard changed ${relative(repoDir, path)} from ${raised.from} to ${MIN_NODE_MAJOR}, because Cloudflare's build tools need Node.js ${MIN_NODE_MAJOR} or later and Workers Builds uses the version in this file. Check the app still works on Node.js ${MIN_NODE_MAJOR}.`,
+      );
+    }
+  }
+  return warnings;
+}
+
 export const convertStep: Step = {
   id: "convert",
   title: "Convert the project",
@@ -78,7 +101,8 @@ export const convertStep: Step = {
       log: ctx.log,
       options: { nextCache: plan.nextCache },
     });
-    for (const w of result.warnings) ctx.log(`Warning: ${w}`);
+    const warnings = [...result.warnings, ...(await updateToolchainFiles(dir, repoDir))];
+    for (const w of warnings) ctx.log(`Warning: ${w}`);
 
     const configPath = join(dir, "cloudflare.config.ts");
     const source = await readFile(configPath, "utf8").catch(() => {
@@ -117,7 +141,7 @@ export const convertStep: Step = {
 
     ctx.outputs.projectDir = dir;
     if (result.buildScript) ctx.outputs.buildScript = result.buildScript;
-    ctx.outputs.warnings = JSON.stringify(result.warnings);
+    ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };
 

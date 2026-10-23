@@ -128,6 +128,30 @@ describe("convertStep", () => {
     );
   });
 
+  it("raises a low Node.js pin, in the project and at the repository root", async () => {
+    const repoDir = await makeTempDir();
+    await mkdir(join(repoDir, "apps/web"), { recursive: true });
+    await writeFile(join(repoDir, ".nvmrc"), "v20.19.6\n");
+    await writeFile(join(repoDir, "apps/web/.node-version"), "24\n");
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx } = makeContext({
+      plan: { repo: { owner: "acme", name: "shop", productionBranch: "main", rootDirectory: "apps/web" } },
+      deps: { run: fakeRunner().run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    expect(await readFile(join(repoDir, ".nvmrc"), "utf8")).toBe("22\n");
+    expect(await readFile(join(repoDir, "apps/web/.node-version"), "utf8")).toBe("24\n");
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
+      "Switchyard changed .nvmrc from v20.19.6 to 22, because Cloudflare's build tools need Node.js 22 or later and Workers Builds uses the version in this file. Check the app still works on Node.js 22.",
+    ]);
+  });
+
   it("works inside the project's root directory", async () => {
     const repoDir = await makeTempDir();
     await mkdir(join(repoDir, "apps/web"), { recursive: true });

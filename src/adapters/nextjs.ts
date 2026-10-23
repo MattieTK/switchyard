@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { appendFile, chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { satisfies, validRange } from "semver";
 import { CLOUDFLARE_BUILD_SCRIPT, cloudflareBuildScript } from "../codegen/build-script.ts";
+import { preapproveYarnPackages, quarantinedPackages } from "../codegen/toolchain-files.ts";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
-import { type CommandRunner, runOrThrow } from "../exec.ts";
+import { type CommandRunner, CommandError, type RunResult, runOrThrow } from "../exec.ts";
 import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
 import {
   addCommand,
@@ -120,6 +121,71 @@ async function readPackageJson(dir: string): Promise<PackageJson | null> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return null;
+  }
+}
+
+// The nearest file called name from dir up to the repository root, or null.
+function findUp(dir: string, name: string): string | null {
+  for (let folder = dir; ; folder = dirname(folder)) {
+    const path = join(folder, name);
+    if (existsSync(path)) return path;
+    if (existsSync(join(folder, ".git")) || dirname(folder) === folder) return null;
+  }
+}
+
+// How many times vinext init runs again after Yarn holds packages back for their age.
+// Yarn stops at the first package it holds back, so each run can find one more.
+const MAX_QUARANTINE_RETRIES = 8;
+
+// The npmPreapprovedPackages entry for a package Yarn held back. A scope belongs to one
+// publisher, whose packages tend to be released together, so the whole scope is approved.
+function preapprovalPattern(name: string): string {
+  return name.startsWith("@") ? `${name.split("/")[0]}/*` : name;
+}
+
+// Runs vinext init. Yarn 4 holds back releases newer than npmMinimalAgeGate, and vinext
+// init installs Cloudflare packages that are often only days old, so the install can fail.
+// The packages Yarn names are added to npmPreapprovedPackages, package.json and yarn.lock
+// go back to how they were, and vinext init runs again.
+async function runVinextInit(
+  ctx: ConvertContext,
+  command: { cmd: string; args: string[] },
+  env: Record<string, string>,
+  warnings: string[],
+): Promise<RunResult> {
+  const read = (path: string | null) => (path ? readFile(path, "utf8").catch(() => null) : Promise.resolve(null));
+  const manifestPath = join(ctx.dir, "package.json");
+  const lockPath = findUp(ctx.dir, "yarn.lock");
+  const [manifest, lock] = await Promise.all([read(manifestPath), read(lockPath)]);
+  const yarnrc = findUp(ctx.dir, ".yarnrc.yml") ?? join(ctx.dir, ".yarnrc.yml");
+  const approved: string[] = [];
+  for (let attempt = 0; ; attempt++) {
+    const result = await ctx.run(command.cmd, command.args, { cwd: ctx.dir, onLine: ctx.log, env });
+    if (result.code === 0) {
+      if (approved.length) {
+        warnings.push(
+          `Switchyard added ${approved.join(", ")} to npmPreapprovedPackages in ${relative(ctx.dir, yarnrc)}, because Yarn held back these releases as newer than npmMinimalAgeGate and the conversion needs them. Remove the entries if you'd rather wait for those releases to age.`,
+        );
+      }
+      return result;
+    }
+    const quarantined = ctx.pm === "yarn" ? quarantinedPackages(result.output) : [];
+    const blocked = [...new Set(quarantined.map(preapprovalPattern))].filter((p) => !approved.includes(p));
+    if (!blocked.length || attempt >= MAX_QUARANTINE_RETRIES) throw new CommandError(command.cmd, command.args, result);
+    const updated = preapproveYarnPackages((await read(yarnrc)) ?? "", blocked);
+    if (!updated) {
+      ctx.log(
+        `Warning: Yarn held back ${blocked.join(", ")} as newer than npmMinimalAgeGate. npmPreapprovedPackages in ${relative(ctx.dir, yarnrc)} is an inline list Switchyard can't extend, so add them to it and retry.`,
+      );
+      throw new CommandError(command.cmd, command.args, result);
+    }
+    await writeFile(yarnrc, updated.text);
+    if (manifest !== null) await writeFile(manifestPath, manifest);
+    if (lockPath && lock !== null) await writeFile(lockPath, lock);
+    approved.push(...blocked);
+    ctx.log(
+      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running vinext init again.`,
+    );
   }
 }
 
@@ -257,7 +323,7 @@ export const nextjsAdapter: Adapter = {
       ...NEXT_CACHE_FLAGS[ctx.options.nextCache],
       "--image-optimization=cloudflare-images",
     ]);
-    const result = await runOrThrow(ctx.run, cmd, args, { cwd: ctx.dir, onLine: ctx.log, env });
+    const result = await runVinextInit(ctx, { cmd, args }, env, warnings);
     await restoreModuleType(ctx.dir, typeBefore);
     warnings.push(...(await updateVinextPeers(ctx, env)));
     if (result.output.includes("approve-builds")) {

@@ -296,6 +296,75 @@ old-lib 1.0.0
     expect(await readFile(join(dir, "package.json"), "utf8")).toBe(original);
   });
 
+  describe("Yarn's release-age gate", () => {
+    const QUARANTINED = `➤ YN0027: @cloudflare/vite-plugin@beta can't be resolved to a satisfying range
+➤ YN0016: All versions satisfying "^2.0.0-beta.v.4" are quarantined`;
+    const DEPENDENCY = `➤ YN0016: │ miniflare@npm:5.20261019.1-beta: All versions satisfying "5.20261019.1-beta" are quarantined`;
+
+    // vinext init that changes package.json, then fails with each output in turn until they run out.
+    const initFailing = (outputs: string[]) => {
+      const seen: string[] = [];
+      const { run, calls } = fakeRunner(async (_cmd, args) => {
+        if (!args.includes("init")) return { code: 0, output: "" };
+        seen.push(await readFile(join(dir, "package.json"), "utf8").catch(() => ""));
+        await writeFile(join(dir, "package.json"), '{"type":"module","half":"done"}');
+        const output = outputs.shift();
+        return output === undefined ? { code: 0, output: "" } : { code: 1, output };
+      });
+      return { run, calls, seen };
+    };
+
+    it("preapproves the packages Yarn held back and runs vinext init again from the same files", async () => {
+      await writeFile(join(dir, "package.json"), '{"name":"app"}');
+      await writeFile(join(dir, ".yarnrc.yml"), 'npmMinimalAgeGate: "3d"\n');
+      const { run, calls, seen } = initFailing([QUARANTINED, DEPENDENCY]);
+      const r = await nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } });
+      expect(calls.filter((c) => c.args.includes("init"))).toHaveLength(3);
+      expect(seen).toEqual(['{"name":"app"}', '{"name":"app"}', '{"name":"app"}']);
+      expect(await readFile(join(dir, ".yarnrc.yml"), "utf8")).toBe(
+        'npmMinimalAgeGate: "3d"\n\nnpmPreapprovedPackages:\n  - "miniflare"\n  - "@cloudflare/*"\n',
+      );
+      expect(r.warnings).toContain(
+        "Switchyard added @cloudflare/*, miniflare to npmPreapprovedPackages in .yarnrc.yml, because Yarn held back these releases as newer than npmMinimalAgeGate and the conversion needs them. Remove the entries if you'd rather wait for those releases to age.",
+      );
+    });
+
+    it("uses the repository root's .yarnrc.yml in a monorepo", async () => {
+      const root = dir;
+      await mkdir(join(root, ".git"));
+      await writeFile(join(root, ".yarnrc.yml"), "nodeLinker: pnp\n");
+      dir = join(root, "apps", "web");
+      await mkdir(dir, { recursive: true });
+      const { run } = initFailing([QUARANTINED]);
+      const r = await nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(root, ".yarnrc.yml"), "utf8")).toContain('  - "@cloudflare/*"');
+      await expect(readFile(join(dir, ".yarnrc.yml"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(r.warnings.at(-1)).toContain("in ../../.yarnrc.yml, because");
+      dir = root;
+    });
+
+    it("approves a scope once, however many of its packages Yarn holds back", async () => {
+      const scoped = (name: string) => `➤ YN0016: │ @cloudflare/${name}@npm:1.0.0: All versions satisfying "1.0.0" are quarantined`;
+      const { run, calls } = initFailing([QUARANTINED, scoped("config"), scoped("runtime-types")]);
+      await expect(nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } })).rejects.toThrow(
+        "exited with code 1",
+      );
+      // The second failure names nothing new, so there is no third run.
+      expect(calls.filter((c) => c.args.includes("init"))).toHaveLength(2);
+    });
+
+    it("stops when a retry reports nothing new, and leaves other failures alone", async () => {
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "yarn", run: initFailing([QUARANTINED, QUARANTINED]).run, log: () => {}, options: { nextCache: "kv" } }),
+      ).rejects.toThrow("exited with code 1");
+      await rm(join(dir, ".yarnrc.yml"));
+      const { run, calls } = initFailing(["ERESOLVE could not resolve"]);
+      await expect(nextjsAdapter.convert({ dir, pm: "yarn", run, log: () => {}, options: { nextCache: "kv" } })).rejects.toThrow();
+      expect(calls.filter((c) => c.args.includes("init"))).toHaveLength(1);
+      await expect(readFile(join(dir, ".yarnrc.yml"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   describe("module type", () => {
     // Does what vinext init does to package.json and the Vite config.
     const initLikeVinext = (config = "vite.config.ts") =>

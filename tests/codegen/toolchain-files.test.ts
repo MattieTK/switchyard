@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { approveBuilds, raiseNodeVersion, undecidedBuilds } from "../../src/codegen/toolchain-files.ts";
+import {
+  approveBuilds,
+  preapproveYarnPackages,
+  quarantinedPackages,
+  raiseNodeVersion,
+  undecidedBuilds,
+} from "../../src/codegen/toolchain-files.ts";
 
 describe("raiseNodeVersion", () => {
   it("raises a pin older than Node.js 22 to 22", () => {
@@ -45,5 +51,51 @@ allowBuilds:
   canvas: false
 `);
     expect(approveBuilds(yaml, ["sharp"])).toContain("  'sharp': true\n");
+  });
+});
+
+describe("preapproveYarnPackages", () => {
+  it("adds the setting when the file doesn't have it", () => {
+    expect(preapproveYarnPackages('nodeLinker: "node-modules"\nnpmMinimalAgeGate: "3d"', ["vinext", "@cloudflare/*"])).toEqual({
+      text: 'nodeLinker: "node-modules"\nnpmMinimalAgeGate: "3d"\n\nnpmPreapprovedPackages:\n  - "vinext"\n  - "@cloudflare/*"\n',
+      added: ["vinext", "@cloudflare/*"],
+    });
+    expect(preapproveYarnPackages("", ["vinext"])?.text).toBe('npmPreapprovedPackages:\n  - "vinext"\n');
+  });
+
+  it("extends an existing list without repeating entries", () => {
+    const yaml = 'npmPreapprovedPackages:\n  - "@acme/*"\n  - vinext\nnodeLinker: pnp\n';
+    expect(preapproveYarnPackages(yaml, ["vinext", "vite"])).toEqual({
+      text: 'npmPreapprovedPackages:\n  - "vite"\n  - "@acme/*"\n  - vinext\nnodeLinker: pnp\n',
+      added: ["vite"],
+    });
+    expect(preapproveYarnPackages(yaml, ["vinext"])).toEqual({ text: yaml, added: [] });
+    // Items of a later list don't count.
+    const later = 'npmPreapprovedPackages:\n  - "@acme/*"\npackageExtensions:\n  - vite\n';
+    expect(preapproveYarnPackages(later, ["vite"])?.added).toEqual(["vite"]);
+  });
+
+  it("leaves an inline list alone", () => {
+    expect(preapproveYarnPackages('npmPreapprovedPackages: ["@acme/*"]\n', ["vinext"])).toBeNull();
+  });
+});
+
+describe("quarantinedPackages", () => {
+  it("names the packages Yarn held back for their release age", () => {
+    const requested = `➤ YN0060: │ react is listed by your project with version 18.2.0 (p993930), which doesn't satisfy what react-server-dom-webpack requests.
+➤ YN0027: @cloudflare/vite-plugin@beta can't be resolved to a satisfying range
+➤ YN0016: All versions satisfying "^2.0.0-beta.v.4" are quarantined
+`;
+    expect(quarantinedPackages(requested)).toEqual(["@cloudflare/vite-plugin"]);
+    const dependency = `➤ YN0000: ┌ Resolution step
+➤ YN0016: │ miniflare@npm:5.20261019.1-beta: All versions satisfying "5.20261019.1-beta" are quarantined
+➤ YN0016: │ @cloudflare/unenv-preset@npm:2.9.0: All versions satisfying "2.9.0" are quarantined
+`;
+    expect(quarantinedPackages(dependency)).toEqual(["miniflare", "@cloudflare/unenv-preset"]);
+  });
+
+  it("finds nothing in other failures", () => {
+    expect(quarantinedPackages("➤ YN0027: left-pad@^9 can't be resolved to a satisfying range\n")).toEqual([]);
+    expect(quarantinedPackages("ERESOLVE unable to resolve dependency tree")).toEqual([]);
   });
 });

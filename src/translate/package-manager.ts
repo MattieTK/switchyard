@@ -18,13 +18,15 @@ export function installCommand(pm: PackageManager): { cmd: string; args: string[
 }
 
 // Settings for every command that can install packages during a conversion. npm rejects
-// vinext's React peer ranges (ERESOLVE) without legacy-peer-deps. pnpm 11 and later stop
-// the install when they skip a dependency's build script, which earlier versions only
-// warned about; pnpm 11 reads pnpm_config_* rather than npm_config_* variables.
+// vinext's React peer ranges (ERESOLVE) without legacy-peer-deps, and with engine-strict a
+// local Node.js other than the one the project pins stops it, although Workers Builds uses
+// the project's own .nvmrc. pnpm 11 and later stop the install when they skip a
+// dependency's build script, which earlier versions only warned about; pnpm 11 reads
+// pnpm_config_* rather than npm_config_* variables.
 export function installEnv(pm: PackageManager): Record<string, string> {
   switch (pm) {
     case "npm":
-      return { npm_config_legacy_peer_deps: "true" };
+      return { npm_config_legacy_peer_deps: "true", npm_config_engine_strict: "false" };
     case "pnpm":
       return { pnpm_config_strict_dep_builds: "false" };
     default:

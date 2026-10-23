@@ -557,6 +557,30 @@ framer-motion 7.3.5
     });
   });
 
+  it("makes output: standalone apply only outside the Cloudflare build", async () => {
+    for (const [file, before, after] of [
+      ["next.config.mjs", 'export default { output: "standalone" };\n', 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n'],
+      [
+        "next.config.js",
+        "module.exports = { output: process.env.E2E === 'true' ? undefined : 'standalone', images: {} };\n",
+        "module.exports = { output: process.env.E2E === 'true' ? undefined : (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : 'standalone'), images: {} };\n",
+      ],
+    ] as const) {
+      await rm(join(dir, "next.config.mjs"), { force: true });
+      await writeFile(join(dir, file), before);
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(dir, file), "utf8")).toBe(after);
+      expect(r.warnings).toContainEqual(expect.stringContaining(`${file} set output: "standalone"`));
+      await rm(join(dir, file));
+    }
+    // Other outputs, and a config Switchyard already changed, stay as they are.
+    for (const config of ["export default { output: 'export' };\n", 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n']) {
+      await writeFile(join(dir, "next.config.mjs"), config);
+      await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(dir, "next.config.mjs"), "utf8")).toBe(config);
+    }
+  });
+
   it("fails when vinext init fails", async () => {
     const { run } = fakeRunner(() => ({ code: 1, output: "incompatible" }));
     await expect(

@@ -38,7 +38,7 @@ const UPGRADE_OPTIONS: { key: Exclude<keyof PlanOptions, "switchToPnpm">; label:
     key: "updateFlaggedPackages",
     label: "Update flagged packages",
     description:
-      "Update packages the upgrade reports as incompatible with the new React to their latest release, when that release supports it. These can be major updates.",
+      "Update packages the upgrade reports as incompatible with the new React to the first release that supports it. These can be major updates.",
   },
 ];
 
@@ -222,7 +222,7 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
           )}
         </Card>
 
-        {(plan.upgrade || plan.pnpmSwitch) && (
+        {(plan.upgrade || plan.pnpmSwitch?.available) && (
           <Card title="Upgrade options">
             <p className="note">
               {plan.upgrade ? (

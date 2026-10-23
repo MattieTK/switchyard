@@ -117,7 +117,7 @@ export function pnpmSwitchOffer(input: {
     locks.length > 1
       ? `This project has more than one lockfile (${locks.join(", ")}), so different tools can install different versions. One pnpm lockfile replaces them.`
       : yarn1
-        ? "This project uses Yarn 1, which only gets maintenance fixes. pnpm import keeps the dependency versions in yarn.lock."
+        ? "This project uses Yarn 1, which only gets maintenance fixes."
         : null;
   return { available: true, hint, reresolves };
 }

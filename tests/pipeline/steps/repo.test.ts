@@ -128,27 +128,42 @@ describe("convertStep", () => {
     );
   });
 
-  it("raises a low Node.js pin, in the project and at the repository root", async () => {
+  it("raises a low Node.js pin and allows build scripts of packages the conversion added, in the project and at the repository root", async () => {
     const repoDir = await makeTempDir();
     await mkdir(join(repoDir, "apps/web"), { recursive: true });
     await writeFile(join(repoDir, ".nvmrc"), "v20.19.6\n");
     await writeFile(join(repoDir, "apps/web/.node-version"), "24\n");
+    await writeFile(
+      join(repoDir, "pnpm-workspace.yaml"),
+      "allowBuilds:\n  workerd: set this to true or false\n  sharp: set this to true or false\n",
+    );
     const adapter = {
       convert: async (c: { dir: string }) => {
         await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
         return { baseEntrypoint: "x", warnings: [] };
       },
     } as unknown as Adapter;
+    // The production branch's lockfile already had sharp, but not workerd.
+    const { run } = fakeRunner((_cmd, args) =>
+      args[0] === "show" && args[1] === "origin/main:pnpm-lock.yaml"
+        ? { code: 0, output: "packages:\n\n  sharp@0.34.3:\n    resolution: {}\n" }
+        : { code: args[0] === "show" ? 128 : 0, output: "" },
+    );
     const { ctx } = makeContext({
       plan: { repo: { owner: "acme", name: "shop", productionBranch: "main", rootDirectory: "apps/web" } },
-      deps: { run: fakeRunner().run, adapter: () => adapter },
+      deps: { run, adapter: () => adapter },
       outputs: { clone: { dir: repoDir } },
     });
     await convertStep.run(ctx);
     expect(await readFile(join(repoDir, ".nvmrc"), "utf8")).toBe("22\n");
     expect(await readFile(join(repoDir, "apps/web/.node-version"), "utf8")).toBe("24\n");
+    expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe(
+      "allowBuilds:\n  workerd: true\n  sharp: set this to true or false\n",
+    );
     expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
       "Switchyard changed .nvmrc from v20.19.6 to 22, because Cloudflare's build tools need Node.js 22 or later and Workers Builds uses the version in this file. Check the app still works on Node.js 22.",
+      "Switchyard allowed the build scripts of workerd in pnpm-workspace.yaml. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.",
+      "pnpm skipped the build scripts of sharp and marked them for review in pnpm-workspace.yaml. pnpm stops installing until each is set to true or false, so decide before merging.",
     ]);
   });
 

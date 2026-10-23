@@ -325,6 +325,29 @@ const NEXT_CONFIG_FILES = ["next.config.js", "next.config.mjs", "next.config.ts"
 // and assignments such as nextConfig.output = "standalone".
 const STANDALONE_OUTPUT = /\boutput\s*[:=][^,;\n}]*["'`]standalone["'`]/;
 
+// cf build sets this for the Cloudflare build only.
+const CLOUDFLARE_BUILD_ENV = "CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT";
+
+// vinext writes standalone output from dist/ after a build, but cf build puts the output in
+// .cloudflare/output, so a Cloudflare build with output: "standalone" fails (a vinext bug).
+// Makes the standalone value apply only outside the Cloudflare build, so next build and
+// Docker images keep it. Returns a warning when next.config changed.
+async function standaloneOutsideCloudflare(dir: string): Promise<string | null> {
+  for (const name of NEXT_CONFIG_FILES) {
+    const path = join(dir, name);
+    const text = await readFile(path, "utf8").catch(() => null);
+    const match = text === null ? null : STANDALONE_OUTPUT.exec(text);
+    if (text === null || !match || match[0].includes(CLOUDFLARE_BUILD_ENV)) continue;
+    const setting = match[0].replace(
+      /(["'`])standalone\1/,
+      (literal) => `(process.env.${CLOUDFLARE_BUILD_ENV} ? undefined : ${literal})`,
+    );
+    await writeFile(path, text.slice(0, match.index) + setting + text.slice(match.index + match[0].length));
+    return `${name} set output: "standalone", which vinext's Cloudflare build can't produce. Switchyard made it apply only outside the Cloudflare build (when ${CLOUDFLARE_BUILD_ENV} isn't set), so next build and Docker images still get standalone output.`;
+  }
+  return null;
+}
+
 // cf picks the framework to build itself, and cloudflare.config.ts can't name it. With one
 // of these dependencies beside Next.js and Vite, it finds more than one framework and stops.
 // Checked against cf 1.0.0-beta.20, which reads them from package.json.
@@ -411,7 +434,7 @@ export const nextjsAdapter: Adapter = {
     const config = NEXT_CONFIG_FILES.map((f) => files[f]).find((text) => text !== undefined);
     if (config && STANDALONE_OUTPUT.test(config)) {
       warnings.push(
-        'next.config sets output: "standalone", which makes vinext look for a Node.js server build that the Cloudflare build doesn\'t produce, so the build will fail. Remove the setting on the migration branch if nothing else, such as a Docker image, depends on it.',
+        'next.config sets output: "standalone", which vinext\'s Cloudflare build can\'t produce. Switchyard will make it apply only outside the Cloudflare build, so next build and Docker images keep standalone output.',
       );
     }
     return warnings;
@@ -464,6 +487,8 @@ export const nextjsAdapter: Adapter = {
     ]);
     const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
     await restoreModuleType(ctx.dir, typeBefore);
+    const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
+    if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));
     if (result.output.includes("approve-builds")) {
       warnings.push(

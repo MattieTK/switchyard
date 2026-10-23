@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { detectVercelFeatures } from "../../src/translate/features.ts";
 import { allDependencies, parsePackageJson } from "../../src/translate/package-json.ts";
-import { addCommand, detectPackageManager, dlxCommand, execCommand, execString, installCommand } from "../../src/translate/package-manager.ts";
+import {
+  addCommand,
+  detectPackageManager,
+  dlxCommand,
+  execCommand,
+  execString,
+  installCommand,
+  pnpmSwitchOffer,
+} from "../../src/translate/package-manager.ts";
 import { detectStorage } from "../../src/translate/storage.ts";
 import { inferTokenScope } from "../../src/translate/token-scope.ts";
 
@@ -17,6 +25,12 @@ describe("package.json", () => {
     expect(parsePackageJson('{"packageManager":123,"dependencies":"x","devDependencies":{"a":"1","b":2}}')).toEqual({
       devDependencies: { a: "1" },
     });
+  });
+
+  it("reads workspaces in the list and { packages } forms", () => {
+    expect(parsePackageJson('{"workspaces":["apps/*",1]}')).toEqual({ workspaces: ["apps/*"] });
+    expect(parsePackageJson('{"workspaces":{"packages":["packages/*"]}}')).toEqual({ workspaces: ["packages/*"] });
+    expect(parsePackageJson('{"workspaces":"x"}')).toEqual({});
   });
 
   it("merges dependencies and devDependencies", () => {
@@ -59,6 +73,36 @@ describe("package manager", () => {
     // Yarn 1 has no dlx, and npx works whichever Yarn the project uses.
     expect(dlxCommand("yarn", "vinext@1.1.0", ["init"])).toEqual({ cmd: "npx", args: ["--yes", "vinext@1.1.0", "init"] });
     expect(dlxCommand("bun", "vinext@1.1.0", ["init"])).toEqual({ cmd: "bunx", args: ["vinext@1.1.0", "init"] });
+  });
+});
+
+describe("pnpmSwitchOffer", () => {
+  const offer = (pm: "npm" | "yarn" | "bun" | "pnpm", projectFiles: string[], packageJson = {}, rootFiles = projectFiles) =>
+    pnpmSwitchOffer({ pm, packageJson, projectFiles, rootFiles });
+
+  it("offers nothing to pnpm projects", () => {
+    expect(offer("pnpm", ["pnpm-lock.yaml"])).toBeNull();
+  });
+
+  it("keeps versions from npm and Yarn lockfiles, and re-resolves for bun", () => {
+    expect(offer("npm", ["package-lock.json"])).toEqual({ available: true, hint: null, reresolves: false });
+    expect(offer("bun", ["bun.lock"])).toEqual({ available: true, hint: null, reresolves: true });
+  });
+
+  it("points out Yarn 1 and mixed lockfiles", () => {
+    expect(offer("yarn", ["yarn.lock"])).toMatchObject({ hint: expect.stringContaining("Yarn 1") });
+    expect(offer("yarn", ["yarn.lock"], { packageManager: "yarn@4.6.0" })).toMatchObject({ hint: null });
+    expect(offer("yarn", ["yarn.lock", "package-lock.json"])).toMatchObject({
+      hint: expect.stringContaining("more than one lockfile (package-lock.json, yarn.lock)"),
+    });
+  });
+
+  it("isn't available for workspaces or a lockfile outside the project folder", () => {
+    expect(offer("yarn", ["yarn.lock"], { workspaces: ["apps/*"] })).toEqual({
+      available: false,
+      reason: "This project uses yarn workspaces, and Switchyard can't move workspace settings to pnpm yet.",
+    });
+    expect(offer("npm", ["package.json"], {}, ["package-lock.json", "apps"])).toMatchObject({ available: false });
   });
 });
 

@@ -57,6 +57,11 @@ describe("job routes", () => {
     });
     expect(res.status).toBe(201);
     expect(start).toHaveBeenCalledWith({ projectId: "p1", workerName: "shop", nextCache: "kv", values: { s: "v" }, skip: [] });
+    const withOptions = { projectId: "p1", workerName: "shop", nextCache: "kv", values: {}, skip: [], options: { switchToPnpm: true } };
+    expect((await req("/api/jobs", { method: "POST", json: withOptions })).status).toBe(201);
+    expect(start).toHaveBeenLastCalledWith(withOptions);
+    const badOption = { ...withOptions, options: { switchToPnpm: "yes" } };
+    expect((await req("/api/jobs", { method: "POST", json: badOption })).status).toBe(400);
   });
 
   it("returns user input errors with their status", async () => {

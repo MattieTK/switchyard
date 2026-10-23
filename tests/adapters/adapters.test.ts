@@ -111,11 +111,13 @@ describe("nextjsAdapter", () => {
     const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }, {}) ?? [];
     expect(rest).toEqual([]);
     expect(warning).toBe(
-      "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
+      "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Only the required migrations run unless you choose more under Upgrade options. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
     );
     expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "^16.1.0" } }, {})).toEqual([]);
     expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "canary" } }, {})).toEqual([]);
     expect(nextjsAdapter.planWarnings?.(null, {})).toEqual([]);
+    expect(nextjsAdapter.upgradeFor?.({ dependencies: { next: "^13.4.0" } })).toEqual({ from: "^13.4.0", to: "16.4.1" });
+    expect(nextjsAdapter.upgradeFor?.({ dependencies: { next: "16.2.0" } })).toBeNull();
   });
 
   it("warns in the plan about Hono and standalone output, which the Cloudflare build can't handle yet", () => {

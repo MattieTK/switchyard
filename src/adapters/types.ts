@@ -13,6 +13,10 @@ export type NextCachePreset = "kv" | "none";
 
 export interface AdapterOptions {
   nextCache: NextCachePreset;
+  // Opt-ins for apps the adapter upgrades, all off unless the user chose them.
+  adoptionCodemods?: boolean;
+  eslintMigration?: boolean;
+  updateFlaggedPackages?: boolean;
 }
 
 export interface ConvertContext {
@@ -43,6 +47,8 @@ export interface Adapter {
   // Binding names the converter creates, which env vars must not reuse.
   reservedBindings: readonly string[];
   matches(input: DetectInput): boolean;
+  // The framework upgrade convert will run before converting, or null when none is needed.
+  upgradeFor?(packageJson: PackageJson | null): { from: string; to: string } | null;
   // Project files planWarnings reads, fetched when the project has them.
   planFiles?: readonly string[];
   // Things the user should know before approving, shown with the plan. files holds the

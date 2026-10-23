@@ -8,7 +8,12 @@ import { ApiError } from "../http.ts";
 import { buildEnvPlan, type EnvPlan, type EnvValues } from "../translate/env-plan.ts";
 import { detectVercelFeatures, type FeatureFinding } from "../translate/features.ts";
 import { allDependencies, parsePackageJson, type PackageJson } from "../translate/package-json.ts";
-import { detectPackageManager, type PackageManager } from "../translate/package-manager.ts";
+import {
+  detectPackageManager,
+  type PackageManager,
+  type PnpmSwitchOffer,
+  pnpmSwitchOffer,
+} from "../translate/package-manager.ts";
 import { detectStorage, type StorageFinding } from "../translate/storage.ts";
 import { translateVercelJson, type VercelJsonTranslation } from "../translate/vercel-json.ts";
 
@@ -16,6 +21,25 @@ export interface DomainPlan {
   name: string;
   zone: string | null;
 }
+
+// Opt-ins the user can choose on the plan screen. All are off unless chosen.
+export interface PlanOptions {
+  // Also run the upgrade's optional feature-adoption codemods.
+  adoptionCodemods: boolean;
+  // Move from next lint to the ESLint CLI with the upgrade's codemod.
+  eslintMigration: boolean;
+  // Update packages the upgrade flags as incompatible to a release that supports it.
+  updateFlaggedPackages: boolean;
+  // Move the project to pnpm.
+  switchToPnpm: boolean;
+}
+
+export const DEFAULT_PLAN_OPTIONS: PlanOptions = {
+  adoptionCodemods: false,
+  eslintMigration: false,
+  updateFlaggedPackages: false,
+  switchToPnpm: false,
+};
 
 export interface MigrationPlan {
   projectId: string;
@@ -33,6 +57,13 @@ export interface MigrationPlan {
   domains: DomainPlan[];
   blockers: string[];
   warnings: string[];
+  // Job files written before these existed lack them, so readers fall back to the defaults.
+  // The framework upgrade conversion runs first, which the upgrade options apply to.
+  upgrade?: { from: string; to: string } | null;
+  pnpmSwitch?: PnpmSwitchOffer | null;
+  options?: PlanOptions;
+  // The project's package manager before the user chose to switch to pnpm.
+  switchedFrom?: PackageManager;
 }
 
 export interface PlanDeps {
@@ -81,6 +112,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   let pkg: PackageJson | null = null;
   let files: string[] = [];
   let vercelJsonRaw: string | null = null;
+  let rootListing: string[] = [];
   // Files in the project's own folder, which the adapter's planFiles are looked up in.
   let projectFiles: string[] = [];
 
@@ -110,6 +142,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       vercelJsonRaw = vercelJson;
       files = [...(rootFiles ?? []), ...(dirFiles ?? [])];
       projectFiles = (rootDirectory ? dirFiles : rootFiles) ?? [];
+      rootListing = rootFiles ?? [];
       if (!pkg) blockers.push(`No readable package.json at ${rootDirectory || "the repository root"} on ${productionBranch}.`);
     } catch (e) {
       if (e instanceof ApiError && !e.auth) blockers.push(e.message);
@@ -138,13 +171,14 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
     );
   }
 
+  const packageManager = detectPackageManager(files, pkg);
   return {
     plan: {
       projectId: project.id,
       projectName: project.name,
       workerName,
       repo,
-      packageManager: detectPackageManager(files, pkg),
+      packageManager,
       adapterId: adapter?.id ?? null,
       support,
       nextCache: "kv",
@@ -155,6 +189,9 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       domains: planDomains(domains, zones),
       blockers,
       warnings,
+      upgrade: adapter?.upgradeFor?.(pkg) ?? null,
+      pnpmSwitch: repo ? pnpmSwitchOffer({ pm: packageManager, packageJson: pkg, projectFiles, rootFiles: rootListing }) : null,
+      options: DEFAULT_PLAN_OPTIONS,
     },
     values: env.values,
   };

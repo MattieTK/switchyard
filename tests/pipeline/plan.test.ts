@@ -65,6 +65,24 @@ describe("buildPlan", () => {
     ]);
     expect(values.e1).toBe("secret-1");
     expect(JSON.stringify(plan)).not.toContain("secret-1");
+    // Already on Next.js 16 and pnpm, so there's nothing to opt into.
+    expect(plan).toMatchObject({ upgrade: null, pnpmSwitch: null, options: { switchToPnpm: false } });
+  });
+
+  it("offers upgrade options and a pnpm switch to an old npm app", async () => {
+    const { plan } = await buildPlan(
+      deps({
+        github: {
+          getFile: async (_o: string, _r: string, path: string) =>
+            path.endsWith("package.json") ? '{"dependencies":{"next":"13.4.0"}}' : null,
+          listDir: async (_o: string, _r: string, path: string) =>
+            path === "" ? ["package-lock.json", "apps"] : ["package.json", "package-lock.json"],
+        },
+      }),
+      "p",
+    );
+    expect(plan.upgrade).toEqual({ from: "13.4.0", to: "16.4.1" });
+    expect(plan.pnpmSwitch).toEqual({ available: true, hint: null, reresolves: false });
   });
 
   it("adds no warning when no Worker has the planned name", async () => {

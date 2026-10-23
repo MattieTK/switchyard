@@ -88,6 +88,33 @@ describe("createJobService", () => {
     expect(getWorkerTag).not.toHaveBeenCalled();
   });
 
+  it("applies the options the user chose, and switching to pnpm changes the plan's package manager", async () => {
+    const offered: MigrationPlan = {
+      ...plan,
+      packageManager: "yarn",
+      upgrade: { from: "13.4.0", to: "16.4.1" },
+      pnpmSwitch: { available: true, hint: null, reresolves: false },
+    };
+    const { service } = await setup({ accountId: "acc", plan: offered });
+    await service.plan("prj_1");
+    const job = await service.start({ ...input, skip: ["s", "t"], options: { eslintMigration: true, switchToPnpm: true } });
+    expect(job.plan).toMatchObject({
+      packageManager: "pnpm",
+      switchedFrom: "yarn",
+      options: { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: false, switchToPnpm: true },
+    });
+  });
+
+  it("refuses options the plan didn't offer", async () => {
+    const unavailable: MigrationPlan = { ...plan, upgrade: null, pnpmSwitch: { available: false, reason: "Workspaces." } };
+    const { service } = await setup({ accountId: "acc", plan: unavailable });
+    await service.plan("prj_1");
+    await expect(service.start({ ...input, skip: ["s", "t"], options: { adoptionCodemods: true } })).rejects.toThrow(
+      "Upgrade options only apply",
+    );
+    await expect(service.start({ ...input, skip: ["s", "t"], options: { switchToPnpm: true } })).rejects.toThrow("Workspaces.");
+  });
+
   it("creates and queues a job with typed values and skips, and only accepts values that were missing", async () => {
     const { service, store, queue } = await setup({ accountId: "acc" });
     await service.plan("prj_1");

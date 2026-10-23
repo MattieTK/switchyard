@@ -78,3 +78,46 @@ export function dlxCommand(pm: PackageManager, pkg: string, args: readonly strin
       return { cmd: "npx", args: ["--yes", pkg, ...args] };
   }
 }
+
+// Lockfiles of the package managers a project can switch to pnpm from.
+export const OTHER_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb"] as const;
+// The ones pnpm import can read, which keeps the resolved versions.
+export const IMPORTABLE_LOCKFILES: readonly string[] = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock"];
+
+export type PnpmSwitchOffer =
+  | { available: true; hint: string | null; reresolves: boolean }
+  | { available: false; reason: string };
+
+// Whether a project can switch to pnpm, given the file names in its own folder and at the
+// repository root. Null for projects that already use pnpm.
+export function pnpmSwitchOffer(input: {
+  pm: PackageManager;
+  packageJson: PackageJson | null;
+  projectFiles: readonly string[];
+  rootFiles: readonly string[];
+}): PnpmSwitchOffer | null {
+  const { pm, packageJson, projectFiles, rootFiles } = input;
+  if (pm === "pnpm") return null;
+  if (packageJson?.workspaces?.length) {
+    return {
+      available: false,
+      reason: `This project uses ${pm} workspaces, and Switchyard can't move workspace settings to pnpm yet.`,
+    };
+  }
+  const locks = OTHER_LOCKFILES.filter((f) => projectFiles.includes(f));
+  if (!locks.length && OTHER_LOCKFILES.some((f) => rootFiles.includes(f))) {
+    return {
+      available: false,
+      reason: "The lockfile is at the repository root, outside the project folder, so switching would change other projects too.",
+    };
+  }
+  const reresolves = !locks.some((f) => IMPORTABLE_LOCKFILES.includes(f));
+  const yarn1 = pm === "yarn" && (!packageJson?.packageManager || packageJson.packageManager.startsWith("yarn@1."));
+  const hint =
+    locks.length > 1
+      ? `This project has more than one lockfile (${locks.join(", ")}), so different tools can install different versions. One pnpm lockfile replaces them.`
+      : yarn1
+        ? "This project uses Yarn 1, which only gets maintenance fixes. pnpm import keeps the dependency versions in yarn.lock."
+        : null;
+  return { available: true, hint, reresolves };
+}

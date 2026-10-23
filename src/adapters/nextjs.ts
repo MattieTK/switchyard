@@ -299,13 +299,17 @@ export const nextjsAdapter: Adapter = {
   support: { level: "supported" },
   reservedBindings: ["ASSETS", "IMAGES", "VINEXT_KV_CACHE"],
   matches: (input) => input.vercelFramework === "nextjs" || "next" in allDependencies(input.packageJson),
+  upgradeFor(packageJson) {
+    const old = needsUpgrade(packageJson);
+    return old ? { from: old.range, to: NEXT_UPGRADE_VERSION } : null;
+  },
   planFiles: NEXT_CONFIG_FILES,
   planWarnings(packageJson, files) {
     const warnings: string[] = [];
     const old = needsUpgrade(packageJson);
     if (old) {
       warnings.push(
-        `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
+        `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Only the required migrations run unless you choose more under Upgrade options. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
       );
     }
     const dependencies = allDependencies(packageJson);

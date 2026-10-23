@@ -325,6 +325,27 @@ const NEXT_CONFIG_FILES = ["next.config.js", "next.config.mjs", "next.config.ts"
 // and assignments such as nextConfig.output = "standalone".
 const STANDALONE_OUTPUT = /\boutput\s*[:=][^,;\n}]*["'`]standalone["'`]/;
 
+const VITE_CONFIG_FILES = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs"];
+const STUB_FILE = "empty-stub.js";
+const STUB_ALIAS = /["']([^"']+)["']\s*:\s*\w+\.resolve\(__dirname,\s*["']empty-stub\.js["']\)/g;
+
+// vinext init points native modules such as sharp at empty-stub.js, which Workers can't
+// load, but doesn't create the file (cloudflare/vinext#4196), so the build fails. Creates
+// it and returns a warning naming the modules, which do nothing on Workers.
+async function createVinextStub(dir: string): Promise<string | null> {
+  for (const name of VITE_CONFIG_FILES) {
+    const config = await readFile(join(dir, name), "utf8").catch(() => null);
+    const modules = config ? [...config.matchAll(STUB_ALIAS)].map((m) => m[1]) : [];
+    if (!modules.length || existsSync(join(dir, STUB_FILE))) continue;
+    await writeFile(
+      join(dir, STUB_FILE),
+      "// Stands in for Node.js-only modules that can't run on Workers. vinext init points them here.\nexport default {};\n",
+    );
+    return `vinext replaces ${modules.join(", ")} with an empty module (${STUB_FILE}), because ${modules.length === 1 ? "it needs" : "they need"} Node.js. Code that calls ${modules.length === 1 ? "it" : "them"} at runtime won't work on Workers.`;
+  }
+  return null;
+}
+
 // cf build sets this for the Cloudflare build only.
 const CLOUDFLARE_BUILD_ENV = "CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT";
 
@@ -487,6 +508,8 @@ export const nextjsAdapter: Adapter = {
     ]);
     const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
     await restoreModuleType(ctx.dir, typeBefore);
+    const stubWarning = await createVinextStub(ctx.dir);
+    if (stubWarning) warnings.push(stubWarning);
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
     if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));

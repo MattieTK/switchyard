@@ -1,8 +1,8 @@
 import { Input } from "@base-ui/react/input";
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { useEffect, useState } from "react";
-import type { MigrationPlan } from "../../../src/pipeline/plan.ts";
+import { type ReactNode, useEffect, useState } from "react";
+import type { MigrationPlan, PlanOptions } from "../../../src/pipeline/plan.ts";
 import type { Job } from "../../../src/pipeline/types.ts";
 import type { EnvDestination } from "../../../src/translate/env-plan.ts";
 import { api, ApiFailure } from "../api.ts";
@@ -19,6 +19,52 @@ const DESTINATIONS: Record<EnvDestination, string> = {
 
 const SUPPORT_TONE = { supported: "ok", partial: "warn", unsupported: "neutral" } as const;
 
+const NO_OPTIONS: PlanOptions = { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false };
+
+// The opt-ins that apply when Switchyard upgrades Next.js.
+const UPGRADE_OPTIONS: { key: Exclude<keyof PlanOptions, "switchToPnpm">; label: string; description: string }[] = [
+  {
+    key: "adoptionCodemods",
+    label: "Adoption codemods",
+    description: "Also run the optional codemods that move the app onto newer Next.js features. More code changes to review.",
+  },
+  {
+    key: "eslintMigration",
+    label: "ESLint migration",
+    description:
+      "Move from next lint, which Next.js 16 removed, to the ESLint CLI with the Next.js codemod. It can fail on some older ESLint configs.",
+  },
+  {
+    key: "updateFlaggedPackages",
+    label: "Update flagged packages",
+    description:
+      "Update packages the upgrade reports as incompatible with the new React to their latest release, when that release supports it. These can be major updates.",
+  },
+];
+
+function OptionRow({
+  checked,
+  onChange,
+  label,
+  children,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="radio-option">
+      <Checkbox checked={checked} onChange={onChange} aria-label={label} />
+      <span>
+        <strong>{label}</strong>
+        <br />
+        <span className="muted">{children}</span>
+      </span>
+    </label>
+  );
+}
+
 export function PlanReview({ projectId, next }: { projectId: string; next: string[] }) {
   const [plan, setPlan] = useState<MigrationPlan | null>(null);
   const [error, setError] = useState<ApiFailure | null>(null);
@@ -26,6 +72,7 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
   const [nextCache, setNextCache] = useState<"kv" | "none">("kv");
   const [values, setValues] = useState<Record<string, string>>({});
   const [skip, setSkip] = useState<string[]>([]);
+  const [options, setOptions] = useState<PlanOptions>(NO_OPTIONS);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -64,7 +111,7 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
     try {
       const job = await api<Job>("/api/jobs", {
         method: "POST",
-        body: { projectId, workerName, nextCache, values, skip },
+        body: { projectId, workerName, nextCache, values, skip, options },
       });
       const [following, ...rest] = next;
       go(following ? `#/plan/${following}${rest.length ? `?next=${rest.join(",")}` : ""}` : `#/jobs/${job.id}`);
@@ -174,6 +221,52 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
             </div>
           )}
         </Card>
+
+        {(plan.upgrade || plan.pnpmSwitch) && (
+          <Card title="Upgrade options">
+            <p className="note">
+              {plan.upgrade ? (
+                <>
+                  Switchyard upgrades Next.js from <code>{plan.upgrade.from}</code> to <code>{plan.upgrade.to}</code>. With nothing
+                  chosen, it runs only the migrations Next.js 16 requires.
+                </>
+              ) : (
+                "Nothing is chosen by default."
+              )}
+            </p>
+            <div className="radio-group">
+              {plan.upgrade &&
+                UPGRADE_OPTIONS.map((o) => (
+                  <OptionRow
+                    key={o.key}
+                    label={o.label}
+                    checked={options[o.key]}
+                    onChange={(c) => setOptions((current) => ({ ...current, [o.key]: c }))}
+                  >
+                    {o.description}
+                  </OptionRow>
+                ))}
+              {plan.pnpmSwitch?.available && (
+                <OptionRow
+                  label="Switch to pnpm"
+                  checked={options.switchToPnpm}
+                  onChange={(c) => setOptions((current) => ({ ...current, switchToPnpm: c }))}
+                >
+                  {plan.pnpmSwitch.reresolves
+                    ? `Move the project from ${plan.packageManager} to pnpm. Its lockfile can't be imported, so pnpm will choose dependency versions again.`
+                    : `Move the project from ${plan.packageManager} to pnpm with pnpm import, which keeps the current dependency versions.`}
+                  {plan.pnpmSwitch.hint && (
+                    <>
+                      {" "}
+                      {plan.pnpmSwitch.hint}
+                    </>
+                  )}
+                </OptionRow>
+              )}
+            </div>
+            {plan.pnpmSwitch && !plan.pnpmSwitch.available && <p className="note">Switching to pnpm isn't offered: {plan.pnpmSwitch.reason}</p>}
+          </Card>
+        )}
 
         <Card title="Environment variables" aside={<span className="muted small">{plan.env.entries.length} found</span>}>
           {plan.env.warnings.map((w) => (

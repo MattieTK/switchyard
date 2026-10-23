@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { satisfies, validRange } from "semver";
@@ -278,28 +278,6 @@ async function updateFlaggedPackages(
   return plan.warnings;
 }
 
-// vinext init sets "type": "module" so its Vite config loads as an ES module. That also
-// makes every other .js file in the project an ES module, and CommonJS scripts it doesn't
-// rename to .cjs (a prebuild tool, a custom server) then fail with "require is not defined".
-// A .mts or .mjs Vite config loads as an ES module whatever the type, so the project keeps its own.
-async function restoreModuleType(dir: string, typeBefore: string | undefined): Promise<void> {
-  if (typeBefore === "module") return;
-  const path = join(dir, "package.json");
-  const text = await readFile(path, "utf8").catch(() => null);
-  const manifest = text === null ? null : (JSON.parse(text) as { type?: string });
-  if (manifest?.type !== "module") return;
-  const config = [
-    ["vite.config.ts", "vite.config.mts"],
-    ["vite.config.js", "vite.config.mjs"],
-  ].find(([from = ""]) => existsSync(join(dir, from)));
-  if (!config) return;
-  const [from = "", to = ""] = config;
-  await rename(join(dir, from), join(dir, to));
-  if (typeBefore === undefined) delete manifest.type;
-  else manifest.type = typeBefore;
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
-}
-
 // Writes the build:cloudflare script when the app's build runs steps before next build.
 // Returns the script's name, or null when cf build alone does the same.
 async function writeCloudflareBuildScript(ctx: ConvertContext, warnings: string[]): Promise<string | null> {
@@ -465,10 +443,6 @@ export const nextjsAdapter: Adapter = {
     if (ctx.pm === "npm" && (await ensureLegacyPeerDeps(ctx.dir))) warnings.push(LEGACY_PEER_DEPS_WARNING);
     const env = installEnv(ctx.pm);
 
-    const typeBefore = await readFile(join(ctx.dir, "package.json"), "utf8").then(
-      (text) => (JSON.parse(text) as { type?: string }).type,
-      () => undefined,
-    );
     const old = needsUpgrade(await readPackageJson(ctx.dir));
     if (old) {
       if (old.major < 11) await pinNext11(ctx.dir);
@@ -507,7 +481,6 @@ export const nextjsAdapter: Adapter = {
       "--image-optimization=cloudflare-images",
     ]);
     const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
-    await restoreModuleType(ctx.dir, typeBefore);
     const stubWarning = await createVinextStub(ctx.dir);
     if (stubWarning) warnings.push(stubWarning);
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);

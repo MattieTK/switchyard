@@ -520,43 +520,6 @@ framer-motion 7.3.5
     });
   });
 
-  describe("module type", () => {
-    // Does what vinext init does to package.json and the Vite config.
-    const initLikeVinext = (config = "vite.config.ts") =>
-      fakeRunner(async (_cmd, args) => {
-        if (args.includes("init")) {
-          const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-          await writeFile(join(dir, "package.json"), JSON.stringify({ ...manifest, type: "module" }));
-          await writeFile(join(dir, config), "export default {};\n");
-        }
-        return { code: 0, output: "" };
-      });
-    const manifest = async () => JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-
-    it("keeps the project's module type and makes the Vite config an ES module file", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "16.2.0" } }));
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run: initLikeVinext().run, log: () => {}, options: { nextCache: "kv" } });
-      expect(await manifest()).not.toHaveProperty("type");
-      expect(await readFile(join(dir, "vite.config.mts"), "utf8")).toBe("export default {};\n");
-      await expect(readFile(join(dir, "vite.config.ts"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
-
-    it("puts back an explicit commonjs type and renames a .js Vite config to .mjs", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ type: "commonjs", dependencies: { next: "16.2.0" } }));
-      const { run } = initLikeVinext("vite.config.js");
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
-      expect((await manifest()).type).toBe("commonjs");
-      expect(await readFile(join(dir, "vite.config.mjs"), "utf8")).toBe("export default {};\n");
-    });
-
-    it("leaves an app that was already an ES module as it is", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ type: "module", dependencies: { next: "16.2.0" } }));
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run: initLikeVinext().run, log: () => {}, options: { nextCache: "kv" } });
-      expect((await manifest()).type).toBe("module");
-      expect(await readFile(join(dir, "vite.config.ts"), "utf8")).toBe("export default {};\n");
-    });
-  });
-
   it("creates the empty-stub.js vinext points native modules at, which vinext init leaves out", async () => {
     const config = `import path from "node:path";
 export default defineConfig({

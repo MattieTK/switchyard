@@ -272,19 +272,58 @@ async function writeCloudflareBuildScript(ctx: ConvertContext, warnings: string[
   return CLOUDFLARE_BUILD_SCRIPT;
 }
 
+const NEXT_CONFIG_FILES = ["next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs", "next.config.mts"];
+// output: "standalone", including conditional values such as `ci ? undefined : "standalone"`,
+// and assignments such as nextConfig.output = "standalone".
+const STANDALONE_OUTPUT = /\boutput\s*[:=][^,;\n}]*["'`]standalone["'`]/;
+
+// cf picks the framework to build itself, and cloudflare.config.ts can't name it. With one
+// of these dependencies beside Next.js and Vite, it finds more than one framework and stops.
+// Checked against cf 1.0.0-beta.20, which reads them from package.json.
+const CF_DETECTED_FRAMEWORKS: Readonly<Record<string, string>> = {
+  hono: "Hono",
+  astro: "Astro",
+  nuxt: "Nuxt",
+  "@sveltejs/kit": "SvelteKit",
+  "@builder.io/qwik": "Qwik",
+  "@solidjs/start": "Solid Start",
+  "@tanstack/react-start": "TanStack Start",
+  vike: "Vike",
+  waku: "Waku",
+  "@analogjs/platform": "Analog",
+};
+
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
   label: "Next.js (vinext)",
   support: { level: "supported" },
   reservedBindings: ["ASSETS", "IMAGES", "VINEXT_KV_CACHE"],
   matches: (input) => input.vercelFramework === "nextjs" || "next" in allDependencies(input.packageJson),
-  planWarnings(packageJson) {
+  planFiles: NEXT_CONFIG_FILES,
+  planWarnings(packageJson, files) {
+    const warnings: string[] = [];
     const old = needsUpgrade(packageJson);
-    return old
-      ? [
-          `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
-        ]
-      : [];
+    if (old) {
+      warnings.push(
+        `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
+      );
+    }
+    const dependencies = allDependencies(packageJson);
+    const others = Object.entries(CF_DETECTED_FRAMEWORKS).filter(([name]) => name in dependencies);
+    if (others.length) {
+      const names = others.map(([, framework]) => framework).join(", ");
+      warnings.push(
+        `This app depends on ${others.map(([name]) => name).join(", ")}, so the Cloudflare build tool (cf) finds ${names} as well as Next.js and Vite. It can't choose between them and stops, so the build will fail. This is a bug in cf that Switchyard can't work around at this point.`,
+      );
+    }
+    // vinext then writes a Node.js server from a build output the Cloudflare build doesn't produce.
+    const config = NEXT_CONFIG_FILES.map((f) => files[f]).find((text) => text !== undefined);
+    if (config && STANDALONE_OUTPUT.test(config)) {
+      warnings.push(
+        'next.config sets output: "standalone", which makes vinext look for a Node.js server build that the Cloudflare build doesn\'t produce, so the build will fail. Remove the setting on the migration branch if nothing else, such as a Docker image, depends on it.',
+      );
+    }
+    return warnings;
   },
   async convert(ctx) {
     const warnings: string[] = [];

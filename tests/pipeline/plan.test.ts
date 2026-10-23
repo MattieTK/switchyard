@@ -81,6 +81,26 @@ describe("buildPlan", () => {
     expect(plan.warnings[0]).toContain("Choose another name");
   });
 
+  it("reads the adapter's plan files from the project folder when they exist", async () => {
+    const requested: string[] = [];
+    const { plan } = await buildPlan(
+      deps({
+        github: {
+          getFile: async (_o: string, _r: string, path: string) => {
+            requested.push(path);
+            if (path.endsWith("package.json")) return '{"dependencies":{"next":"16.2.0"}}';
+            return path.endsWith("next.config.js") ? 'module.exports = { output: "standalone" }' : null;
+          },
+          listDir: async (_o: string, _r: string, path: string) =>
+            path === "" ? ["pnpm-lock.yaml", "apps"] : ["package.json", "next.config.js"],
+        },
+      }),
+      "p",
+    );
+    expect(requested.filter((p) => p.includes("next.config"))).toEqual(["apps/web/next.config.js"]);
+    expect(plan.warnings).toEqual([expect.stringContaining('output: "standalone"')]);
+  });
+
   it("passes on the adapter's warnings, such as a Next.js upgrade", async () => {
     const { plan } = await buildPlan(
       deps({ github: { getFile: async (_o: string, _r: string, path: string) => (path.endsWith("package.json") ? '{"dependencies":{"next":"13.4.0"}}' : null) } }),

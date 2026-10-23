@@ -21,7 +21,9 @@ import { parsePackageJson } from "../../translate/package-json.ts";
 import {
   addCommand,
   execCommand,
+  IMPORTABLE_LOCKFILES,
   installEnv,
+  OTHER_LOCKFILES,
   type PackageManager,
   runScriptCommand,
 } from "../../translate/package-manager.ts";
@@ -130,6 +132,46 @@ async function pinYarn1(projectDir: string, repoDir: string): Promise<string | n
   return null;
 }
 
+// Files only Yarn uses, which a project moved to pnpm no longer needs.
+const YARN_FILES = [".yarnrc.yml", ".yarn", ".pnp.cjs", ".pnp.loader.mjs"];
+
+// Moves the project to pnpm, which the user chose on the plan screen. pnpm import keeps the
+// versions in an npm or Yarn lockfile. A bun lockfile can't be imported, so pnpm resolves
+// versions again, as the plan said. Returns warnings for the pull request.
+async function switchToPnpm(ctx: StepContext, dir: string, from: PackageManager): Promise<string[]> {
+  await ctx.deps.ensurePackageManager("pnpm", dir, ctx.log);
+  const locks = OTHER_LOCKFILES.filter((f) => existsSync(join(dir, f)));
+  const imported = locks.find((f) => IMPORTABLE_LOCKFILES.includes(f));
+  if (imported) {
+    const result = await ctx.deps.run("pnpm", ["import"], { cwd: dir, onLine: ctx.log, env: installEnv("pnpm") });
+    if (result.code !== 0) {
+      throw new Error(
+        `pnpm couldn't import ${imported} (pnpm import exited with code ${result.code}). Check the log, or build the plan again without Switch to pnpm.`,
+      );
+    }
+  }
+  for (const lock of locks) await rm(join(dir, lock), { force: true });
+  const version = (await ctx.deps.run("pnpm", ["--version"], { cwd: dir })).stdout.trim();
+  const manifestPath = join(dir, "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { packageManager?: string; scripts?: Record<string, string> };
+  await writeFile(manifestPath, `${JSON.stringify({ ...manifest, packageManager: `pnpm@${version}` }, null, 2)}\n`);
+
+  const warnings = [
+    imported
+      ? `Switchyard moved the project from ${from} to pnpm with pnpm import, which keeps the dependency versions from ${imported}, and set packageManager to pnpm@${version}.`
+      : `Switchyard moved the project from ${from} to pnpm and set packageManager to pnpm@${version}. ${locks.length ? `${locks.join(" and ")} can't be imported` : "There was no lockfile"}, so pnpm chose dependency versions again. Test the app before merging.`,
+  ];
+  const otherManagers = Object.entries(manifest.scripts ?? {}).filter(([, command]) => /(^|[\s&|;(])(yarn|bunx?)(\s|$)/.test(command));
+  if (otherManagers.length) {
+    warnings.push(
+      `The ${otherManagers.map(([name]) => name).join(", ")} script${otherManagers.length === 1 ? " calls" : "s call"} yarn or bun directly. Change ${otherManagers.length === 1 ? "it" : "them"} to use pnpm.`,
+    );
+  }
+  const leftovers = YARN_FILES.filter((f) => existsSync(join(dir, f)));
+  if (leftovers.length) warnings.push(`pnpm doesn't use ${leftovers.join(", ")}. Remove ${leftovers.length === 1 ? "it" : "them"} once the move is settled.`);
+  return warnings;
+}
+
 export const convertStep: Step = {
   id: "convert",
   title: "Convert the project",
@@ -146,6 +188,7 @@ export const convertStep: Step = {
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");
     if (!adapter) throw new Error(`There is no converter for ${plan.adapterId ?? "this framework"}.`);
     const dir = projectDirFor(repoDir, repo.rootDirectory);
+    const switchWarnings = plan.switchedFrom ? await switchToPnpm(ctx, dir, plan.switchedFrom) : [];
     const yarnWarning = plan.packageManager === "yarn" ? await pinYarn1(dir, repoDir) : null;
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
@@ -161,6 +204,7 @@ export const convertStep: Step = {
       },
     });
     const warnings = [
+      ...switchWarnings,
       ...(yarnWarning ? [yarnWarning] : []),
       ...result.warnings,
       ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
@@ -224,7 +268,8 @@ async function versionBeforeMigration(ctx: StepContext, name: string): Promise<s
   const repoDir = requireOutput(ctx, "clone", "dir");
   const folders = [...new Set([repo.rootDirectory, ""])];
   for (const folder of folders) {
-    for (const file of LOCKFILES[ctx.job.plan.packageManager]) {
+    // A project moved to pnpm had its original manager's lockfile on the production branch.
+    for (const file of LOCKFILES[ctx.job.plan.switchedFrom ?? ctx.job.plan.packageManager]) {
       const path = folder ? `${folder}/${file}` : file;
       const shown = await ctx.deps.run("git", ["show", `origin/${repo.productionBranch}:${path}`], { cwd: repoDir });
       if (shown.code === 0) return previousVersion(file, shown.stdout, name);

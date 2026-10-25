@@ -101,6 +101,32 @@ describe("convertStep", () => {
     expect(ctx.outputs).toEqual({ projectDir: repoDir, warnings: '["heads up"]' });
   });
 
+  it("passes the chosen upgrade options to the adapter, and defaults for older job files", async () => {
+    const seen: unknown[] = [];
+    const adapter = {
+      convert: async (c: { dir: string; options: unknown }) => {
+        seen.push(c.options);
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    for (const options of [
+      { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true, switchToPnpm: false },
+      undefined,
+    ]) {
+      const { ctx } = makeContext({
+        plan: { ...(options ? { options } : {}) },
+        deps: { run: fakeRunner().run, adapter: () => adapter },
+        outputs: { clone: { dir: await makeTempDir() } },
+      });
+      await convertStep.run(ctx);
+    }
+    expect(seen).toEqual([
+      { nextCache: "kv", adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true },
+      { nextCache: "kv", adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false },
+    ]);
+  });
+
   it("doesn't write development values to a .dev.vars that is tracked in git", async () => {
     const repoDir = await makeTempDir();
     await writeFile(join(repoDir, ".dev.vars"), "COMMITTED='original'\n");
@@ -216,6 +242,123 @@ describe("convertStep", () => {
       await convertStep.run(ctx);
       expect(JSON.parse(await readFile(join(repoDir, "package.json"), "utf8"))).toEqual(pkg);
     }
+  });
+
+  describe("switching to pnpm", () => {
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const pnpm = (importCode = 0) =>
+      fakeRunner((cmd, args) =>
+        cmd === "pnpm" && args[0] === "import"
+          ? { code: importCode, output: "" }
+          : cmd === "pnpm" && args[0] === "--version"
+            ? { code: 0, output: "11.27.1\n" }
+            : { code: 0, output: "" },
+      );
+    const switching = (from: "yarn" | "bun", repoDir: string, run: ReturnType<typeof pnpm>["run"], order: string[] = []) =>
+      makeContext({
+        plan: { packageManager: "pnpm", switchedFrom: from },
+        deps: {
+          run,
+          adapter: () => adapter,
+          ensurePackageManager: async (pm) => {
+            order.push(`ensure ${pm}`);
+          },
+        },
+        outputs: { clone: { dir: repoDir } },
+      }).ctx;
+
+    it("imports a Yarn lockfile, removes it and names pnpm in package.json", async () => {
+      const repoDir = await makeTempDir();
+      await writeFile(
+        join(repoDir, "package.json"),
+        JSON.stringify({ packageManager: "yarn@1.22.22", scripts: { build: "yarn generate && next build", generate: "node g.js" } }),
+      );
+      await writeFile(join(repoDir, "yarn.lock"), "# yarn lockfile v1\n");
+      await writeFile(join(repoDir, ".yarnrc.yml"), "nodeLinker: node-modules\n");
+      const order: string[] = [];
+      const { run, calls } = pnpm();
+      const ctx = switching("yarn", repoDir, run, order);
+      await convertStep.run(ctx);
+      expect(order[0]).toBe("ensure pnpm");
+      expect(calls.find((c) => c.args[0] === "import")).toMatchObject({ cmd: "pnpm", opts: { cwd: repoDir } });
+      await expect(stat(join(repoDir, "yarn.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await readFile(join(repoDir, "package.json"), "utf8")).packageManager).toBe("pnpm@11.27.1");
+      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe("shamefullyHoist: true\n");
+      expect(await readFile(join(repoDir, ".npmrc"), "utf8")).toBe("shamefully-hoist=true\n");
+      expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
+        "Switchyard moved the project from yarn to pnpm with pnpm import, which keeps the dependency versions from yarn.lock, and set packageManager to pnpm@11.27.1.",
+        "Switchyard turned on shamefullyHoist in pnpm-workspace.yaml and .npmrc, so packages the app imports without declaring stay reachable, as they were with yarn. Once package.json lists everything the app imports, you can remove it.",
+        "The build script calls yarn or bun directly. Change it to use pnpm.",
+        "pnpm doesn't use .yarnrc.yml. Remove it once the move is settled.",
+      ]);
+    });
+
+    it("can't import a bun lockfile, so pnpm resolves versions again", async () => {
+      const repoDir = await makeTempDir();
+      await writeFile(join(repoDir, "package.json"), "{}");
+      await writeFile(join(repoDir, "bun.lock"), "{}");
+      const { run, calls } = pnpm();
+      const ctx = switching("bun", repoDir, run);
+      await convertStep.run(ctx);
+      expect(calls.some((c) => c.args[0] === "import")).toBe(false);
+      await expect(stat(join(repoDir, "bun.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(ctx.outputs.warnings ?? "[]")[0]).toBe(
+        "Switchyard moved the project from bun to pnpm and set packageManager to pnpm@11.27.1. bun.lock can't be imported, so pnpm chose dependency versions again. Test the app before merging.",
+      );
+    });
+
+    it("stops when pnpm import fails", async () => {
+      const repoDir = await makeTempDir();
+      await writeFile(join(repoDir, "package.json"), "{}");
+      await writeFile(join(repoDir, "yarn.lock"), "__metadata:\n  version: 8\n");
+      await expect(convertStep.run(switching("yarn", repoDir, pnpm(1).run))).rejects.toThrow(
+        "pnpm couldn't import yarn.lock (pnpm import exited with code 1). Check the log, or build the plan again without Switch to pnpm.",
+      );
+    });
+
+    it("reads the original manager's lockfile for packages installed before the migration", async () => {
+      const repoDir = await makeTempDir();
+      await writeFile(join(repoDir, "package.json"), "{}");
+      await writeFile(join(repoDir, "pnpm-workspace.yaml"), "allowBuilds:\n  sharp: set this to true or false\n");
+      const { run } = fakeRunner((_cmd, args) =>
+        args[0] === "show"
+          ? args[1] === "origin/main:yarn.lock"
+            ? { code: 0, output: 'sharp@^0.33.0:\n  version "0.33.5"\n' }
+            : { code: 128, output: "" }
+          : { code: 0, output: args[0] === "--version" ? "11.27.1\n" : "" },
+      );
+      await convertStep.run(switching("yarn", repoDir, run));
+      // The project had sharp before, so its build script stays the user's decision.
+      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toContain("sharp: set this to true or false");
+    });
+  });
+
+  it("removes lockfiles of package managers the project doesn't use", async () => {
+    const repoDir = await makeTempDir();
+    for (const f of ["package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"]) await writeFile(join(repoDir, f), "{}");
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx } = makeContext({
+      plan: { packageManager: "pnpm" },
+      deps: { run: fakeRunner().run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    await expect(stat(join(repoDir, "yarn.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(repoDir, "package-lock.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(repoDir, "pnpm-lock.yaml"))).isFile()).toBe(true);
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toContainEqual(
+      "The project had lockfiles for more than one package manager. Switchyard kept pnpm's, the one it detected, and removed package-lock.json, yarn.lock, because the Cloudflare build tools could otherwise pick another package manager.",
+    );
   });
 
   it("works inside the project's root directory", async () => {

@@ -14,6 +14,8 @@ describe("cronEntrySource", () => {
     expect(src).toContain('import app from "vinext/server/fetch-handler";');
     expect(src).toContain('export * from "vinext/server/fetch-handler";');
     expect(src).toContain("app.fetch(request, env, ctx)");
+    // It type-checks without the Workers types in the app's tsconfig.
+    expect(src).not.toMatch(/ExecutionContext|ScheduledController/);
   });
 
   it("groups paths by schedule", () => {

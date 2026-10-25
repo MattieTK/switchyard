@@ -21,7 +21,9 @@ import { parsePackageJson } from "../../translate/package-json.ts";
 import {
   addCommand,
   execCommand,
+  IMPORTABLE_LOCKFILES,
   installEnv,
+  OTHER_LOCKFILES,
   type PackageManager,
   runScriptCommand,
 } from "../../translate/package-manager.ts";
@@ -113,6 +115,18 @@ async function updateToolchainFiles(
   return warnings;
 }
 
+// Removes lockfiles of package managers the project doesn't use. vinext and cf choose a
+// package manager from the lockfiles they find, so a stray yarn.lock in a pnpm project
+// makes them run Yarn. Returns a warning when anything was removed.
+async function removeOtherLockfiles(dir: string, pm: PackageManager): Promise<string | null> {
+  const other = [...Object.values(LOCKFILES).flat(), "bun.lockb"].filter(
+    (f) => !LOCKFILES[pm].includes(f) && !(pm === "bun" && f === "bun.lockb") && existsSync(join(dir, f)),
+  );
+  if (!other.length) return null;
+  for (const f of other) await rm(join(dir, f), { force: true });
+  return `The project had lockfiles for more than one package manager. Switchyard kept ${pm}'s, the one it detected, and removed ${other.join(", ")}, because the Cloudflare build tools could otherwise pick another package manager.`;
+}
+
 // Keeps a Yarn 1 project on Yarn 1 everywhere by naming it in package.json. Returns a
 // warning when package.json changed.
 async function pinYarn1(projectDir: string, repoDir: string): Promise<string | null> {
@@ -128,6 +142,60 @@ async function pinYarn1(projectDir: string, repoDir: string): Promise<string | n
     return `Switchyard set packageManager to yarn@${YARN_1_VERSION} in package.json. The project has a Yarn 1 lockfile, which Vercel installs with Yarn 1, while Workers Builds would otherwise use Yarn 4 and switch the project to Plug'n'Play.`;
   }
   return null;
+}
+
+// Files only Yarn uses, which a project moved to pnpm no longer needs.
+const YARN_FILES = [".yarnrc.yml", ".yarn", ".pnp.cjs", ".pnp.loader.mjs"];
+
+// Moves the project to pnpm, which the user chose on the plan screen. pnpm import keeps the
+// versions in an npm or Yarn lockfile. A bun lockfile can't be imported, so pnpm resolves
+// versions again, as the plan said. Returns warnings for the pull request.
+async function switchToPnpm(ctx: StepContext, dir: string, from: PackageManager): Promise<string[]> {
+  await ctx.deps.ensurePackageManager("pnpm", dir, ctx.log);
+  const locks = OTHER_LOCKFILES.filter((f) => existsSync(join(dir, f)));
+  const imported = locks.find((f) => IMPORTABLE_LOCKFILES.includes(f));
+  if (imported) {
+    const result = await ctx.deps.run("pnpm", ["import"], { cwd: dir, onLine: ctx.log, env: installEnv("pnpm") });
+    if (result.code !== 0) {
+      throw new Error(
+        `pnpm couldn't import ${imported} (pnpm import exited with code ${result.code}). Check the log, or build the plan again without Switch to pnpm.`,
+      );
+    }
+  }
+  for (const lock of locks) await rm(join(dir, lock), { force: true });
+  // npm, Yarn and bun put every package at the top of node_modules, so apps often import
+  // packages they don't declare. Hoisting keeps those working under pnpm. pnpm 11 reads the
+  // setting from pnpm-workspace.yaml and pnpm 10, Workers Builds' default, from .npmrc.
+  const workspacePath = join(dir, "pnpm-workspace.yaml");
+  const workspace = await readFile(workspacePath, "utf8").catch(() => "");
+  if (!/^shamefullyHoist:/m.test(workspace)) {
+    await writeFile(workspacePath, `${workspace}${workspace && !workspace.endsWith("\n") ? "\n" : ""}shamefullyHoist: true\n`);
+  }
+  const npmrcPath = join(dir, ".npmrc");
+  const npmrc = await readFile(npmrcPath, "utf8").catch(() => "");
+  if (!/^\s*shamefully-hoist\s*=/m.test(npmrc)) {
+    await writeFile(npmrcPath, `${npmrc}${npmrc && !npmrc.endsWith("\n") ? "\n" : ""}shamefully-hoist=true\n`);
+  }
+  const version = (await ctx.deps.run("pnpm", ["--version"], { cwd: dir })).stdout.trim();
+  const manifestPath = join(dir, "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { packageManager?: string; scripts?: Record<string, string> };
+  await writeFile(manifestPath, `${JSON.stringify({ ...manifest, packageManager: `pnpm@${version}` }, null, 2)}\n`);
+
+  const warnings = [
+    imported
+      ? `Switchyard moved the project from ${from} to pnpm with pnpm import, which keeps the dependency versions from ${imported}, and set packageManager to pnpm@${version}.`
+      : `Switchyard moved the project from ${from} to pnpm and set packageManager to pnpm@${version}. ${locks.length ? `${locks.join(" and ")} can't be imported` : "There was no lockfile"}, so pnpm chose dependency versions again. Test the app before merging.`,
+    `Switchyard turned on shamefullyHoist in pnpm-workspace.yaml and .npmrc, so packages the app imports without declaring stay reachable, as they were with ${from}. Once package.json lists everything the app imports, you can remove it.`,
+  ];
+  const otherManagers = Object.entries(manifest.scripts ?? {}).filter(([, command]) => /(^|[\s&|;(])(yarn|bunx?)(\s|$)/.test(command));
+  if (otherManagers.length) {
+    warnings.push(
+      `The ${otherManagers.map(([name]) => name).join(", ")} script${otherManagers.length === 1 ? " calls" : "s call"} yarn or bun directly. Change ${otherManagers.length === 1 ? "it" : "them"} to use pnpm.`,
+    );
+  }
+  const leftovers = YARN_FILES.filter((f) => existsSync(join(dir, f)));
+  if (leftovers.length) warnings.push(`pnpm doesn't use ${leftovers.join(", ")}. Remove ${leftovers.length === 1 ? "it" : "them"} once the move is settled.`);
+  return warnings;
 }
 
 export const convertStep: Step = {
@@ -146,17 +214,26 @@ export const convertStep: Step = {
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");
     if (!adapter) throw new Error(`There is no converter for ${plan.adapterId ?? "this framework"}.`);
     const dir = projectDirFor(repoDir, repo.rootDirectory);
+    const switchWarnings = plan.switchedFrom ? await switchToPnpm(ctx, dir, plan.switchedFrom) : [];
     const yarnWarning = plan.packageManager === "yarn" ? await pinYarn1(dir, repoDir) : null;
+    const lockWarning = await removeOtherLockfiles(dir, plan.packageManager);
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
       pm: plan.packageManager,
       run: ctx.deps.run,
       log: ctx.log,
-      options: { nextCache: plan.nextCache },
+      options: {
+        nextCache: plan.nextCache,
+        adoptionCodemods: plan.options?.adoptionCodemods ?? false,
+        eslintMigration: plan.options?.eslintMigration ?? false,
+        updateFlaggedPackages: plan.options?.updateFlaggedPackages ?? false,
+      },
     });
     const warnings = [
+      ...switchWarnings,
       ...(yarnWarning ? [yarnWarning] : []),
+      ...(lockWarning ? [lockWarning] : []),
       ...result.warnings,
       ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
     ];
@@ -219,7 +296,8 @@ async function versionBeforeMigration(ctx: StepContext, name: string): Promise<s
   const repoDir = requireOutput(ctx, "clone", "dir");
   const folders = [...new Set([repo.rootDirectory, ""])];
   for (const folder of folders) {
-    for (const file of LOCKFILES[ctx.job.plan.packageManager]) {
+    // A project moved to pnpm had its original manager's lockfile on the production branch.
+    for (const file of LOCKFILES[ctx.job.plan.switchedFrom ?? ctx.job.plan.packageManager]) {
       const path = folder ? `${folder}/${file}` : file;
       const shown = await ctx.deps.run("git", ["show", `origin/${repo.productionBranch}:${path}`], { cwd: repoDir });
       if (shown.code === 0) return previousVersion(file, shown.stdout, name);

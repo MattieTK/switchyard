@@ -36,18 +36,65 @@ export function raiseNodeVersion(text: string): { from: string; text: string } |
 
 // pnpm 11 lists a dependency whose build script it skipped under allowBuilds in
 // pnpm-workspace.yaml with this value, and installs fail until someone decides.
-const UNDECIDED = /^(\s+)(['"]?)([^\s'":]+)\2:\s*set this to true or false\s*$/gm;
+const UNDECIDED = /^([ \t]+)(['"]?)([^\s'":]+)\2:[ \t]*set this to true or false[ \t]*$/gm;
 
 // The packages pnpm-workspace.yaml marks for a build-script decision.
 export function undecidedBuilds(text: string): string[] {
   return [...text.matchAll(UNDECIDED)].map((m) => m[3] ?? "");
 }
 
-// Allows the build scripts of the given undecided packages.
-export function approveBuilds(text: string, names: readonly string[]): string {
+// Allows (or, with false, refuses) the build scripts of the given undecided packages.
+export function approveBuilds(text: string, names: readonly string[], allow = true): string {
   return text.replace(UNDECIDED, (line, indent: string, quote: string, name: string) =>
-    names.includes(name) ? `${indent}${quote}${name}${quote}: true` : line,
+    names.includes(name) ? `${indent}${quote}${name}${quote}: ${allow}` : line,
   );
+}
+
+// pnpm 12 writes no placeholders: it skips the build scripts of packages not under allowBuilds,
+// and an install with CI set, as on Workers Builds, fails with ERR_PNPM_IGNORED_BUILDS.
+// `pnpm ignored-builds` lists those packages, indented under this heading.
+const IGNORED_HEADING = "Automatically ignored builds during installation:";
+const PACKAGE_NAME = /^\s+((?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+)\s*$/;
+
+// The packages `pnpm ignored-builds` reports as skipped.
+export function ignoredBuildsFrom(output: string): string[] {
+  const lines = output.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim() === IGNORED_HEADING);
+  if (start === -1) return [];
+  const names: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const m = line.match(PACKAGE_NAME);
+    // "None", or a sentence such as "Cannot identify as no node_modules found", ends the list.
+    if (!m?.[1]) break;
+    names.push(m[1]);
+  }
+  return names;
+}
+
+const ALLOW_BUILDS_KEY = /^allowBuilds:[ \t]*(\S.*)?$/m;
+
+// Allows (or, with false, refuses) the build scripts of the given packages under allowBuilds in
+// pnpm-workspace.yaml, leaving any package already listed as it is. Returns null when the
+// setting is written inline, which would need a YAML parser to extend safely.
+export function allowBuildsIn(
+  text: string,
+  names: readonly string[],
+  allow = true,
+): { text: string; added: string[] } | null {
+  const key = ALLOW_BUILDS_KEY.exec(text);
+  if (key?.[1]) return null;
+  // Only the entries directly under the key, not those of a later setting.
+  const block = key ? (text.slice(key.index + key[0].length).match(/^(?:\r?\n[ \t]+[^\n]*)*/)?.[0] ?? "") : "";
+  const listed = new Set([...block.matchAll(/^[ \t]+(['"]?)([^\s'":]+)\1[ \t]*:/gm)].map((m) => m[2]));
+  const added = names.filter((n) => !listed.has(n));
+  if (!added.length) return { text, added };
+  const entries = added.map((n) => `  "${n}": ${allow}`).join("\n");
+  if (key) {
+    const end = key.index + key[0].length + block.length;
+    return { text: `${text.slice(0, end)}\n${entries}${text.slice(end)}`, added };
+  }
+  const base = text === "" || text.endsWith("\n") ? text : `${text}\n`;
+  return { text: `${base}${base ? "\n" : ""}allowBuilds:\n${entries}\n`, added };
 }
 
 // Yarn 4 refuses releases newer than npmMinimalAgeGate (a day unless the project sets it).

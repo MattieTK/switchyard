@@ -119,12 +119,25 @@ describe("buildsStep", () => {
     expect((err as PauseError).pause.reason).toContain("+ Add account");
   });
 
-  it("pauses when the account has no build token", async () => {
-    const { cf } = cloudflare({ listBuildTokens: async () => [] });
+  it("pauses when the connected user has no build token, naming that user", async () => {
+    // Build tokens belong to a user, so one made by another member of the account isn't listed.
+    const { cf } = cloudflare({ listBuildTokens: async () => [], getUser: async () => ({ id: "u", email: "me@example.com" }) });
     const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
     const err = await buildsStep.run(ctx).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PauseError);
     expect((err as PauseError).pause.reason).toContain("Builds token");
+    expect((err as PauseError).pause.reason).toContain("signed in to the dashboard as me@example.com");
+
+    // Without the user's details the message still explains what to do.
+    const failing = cloudflare({
+      listBuildTokens: async () => [],
+      getUser: async () => {
+        throw new Error("no access");
+      },
+    });
+    const second = makeContext({ deps: { cloudflare: failing.cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
+    const err2 = await buildsStep.run(second.ctx).catch((e: unknown) => e);
+    expect((err2 as PauseError).pause.reason).toContain("the Cloudflare user you connected Switchyard with");
   });
 });
 

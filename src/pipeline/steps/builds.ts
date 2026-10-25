@@ -48,9 +48,15 @@ export const buildsStep: Step = {
 
     const [token] = await cf.listBuildTokens(accountId);
     if (!token) {
+      // Build tokens belong to the user who made them, and the API lists only the caller's own,
+      // so a token another member of the account made in the dashboard doesn't count.
+      const email = await cf
+        .getUser()
+        .then((u) => u.email)
+        .catch(() => null);
+      const who = email ? `signed in to the dashboard as ${email}` : "signed in to the dashboard as the Cloudflare user you connected Switchyard with";
       throw new PauseError({
-        reason:
-          "Your Cloudflare account has no Workers Builds token yet. In the dashboard, open any Worker, go to Settings → Builds and connect a repository once – Cloudflare creates the token then. Then select Check again.",
+        reason: `You have no Workers Builds token on this account yet. Build tokens belong to the user who creates them, so, ${who}, open any Worker other than ${plan.workerName}, go to Settings → Builds and connect a repository once – Cloudflare creates the token then. Then select Check again.`,
         actionLabel: "Open Workers & Pages",
         actionUrl: `https://dash.cloudflare.com/${accountId}/workers-and-pages`,
       });

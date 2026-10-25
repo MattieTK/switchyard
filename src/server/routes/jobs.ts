@@ -32,6 +32,9 @@ const startSchema = z.object({
     .optional(),
 });
 
+// An API token the user pasted for Workers Builds; Cloudflare tokens are short single-line strings.
+const buildTokenSchema = z.object({ token: z.string().trim().min(1).max(500) });
+
 export function jobRoutes(d: AppDeps): Hono {
   const r = new Hono();
 
@@ -61,6 +64,10 @@ export function jobRoutes(d: AppDeps): Hono {
   });
   r.post("/jobs/:id/retry", async (c) => c.json(await d.jobs.retry(c.req.param("id"))));
   r.post("/jobs/:id/restart", async (c) => c.json(await d.jobs.restart(c.req.param("id"))));
+  r.post("/jobs/:id/build-token", async (c) => {
+    const { token } = buildTokenSchema.parse(await c.req.json());
+    return c.json(await d.jobs.submitBuildToken(c.req.param("id"), token));
+  });
   r.get("/jobs/:id/log", async (c) => c.text(await d.jobs.log(c.req.param("id"))));
 
   r.get("/jobs/:id/events", (c) => {

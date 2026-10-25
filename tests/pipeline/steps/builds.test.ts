@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BuildInfo, CloudflareClient, TriggerInput } from "../../../src/clients/cloudflare.ts";
 import type { GitHubClient } from "../../../src/clients/github.ts";
 import { ApiError } from "../../../src/http.ts";
-import { buildsStep, PREVIEW_DEPLOY_COMMAND, startBuildStep } from "../../../src/pipeline/steps/builds.ts";
+import { buildsStep, buildTokenFormUrl, PREVIEW_DEPLOY_COMMAND, startBuildStep } from "../../../src/pipeline/steps/builds.ts";
 import { STEPS } from "../../../src/pipeline/steps/index.ts";
 import { PauseError, STEP_IDS } from "../../../src/pipeline/types.ts";
 import { buildEnvPlan } from "../../../src/translate/env-plan.ts";
@@ -105,6 +105,21 @@ describe("buildsStep", () => {
     expect(ctx.outputs).toEqual({ productionTrigger: "old-1", previewTrigger: "old-2" });
   });
 
+  it("points existing triggers at the build token when they use another one", async () => {
+    // A trigger keeps a deleted build token until it's repointed, and its builds fail.
+    const setTriggerBuildToken = vi.fn(async () => {});
+    const { cf } = cloudflare({
+      listTriggers: async () => [
+        { trigger_uuid: "old-1", trigger_name: "switchyard-production", build_token_uuid: "gone" },
+        { trigger_uuid: "old-2", trigger_name: "switchyard-preview", build_token_uuid: "bt-1" },
+      ],
+      setTriggerBuildToken,
+    });
+    const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
+    await buildsStep.run(ctx);
+    expect(setTriggerBuildToken.mock.calls).toEqual([["acc", "old-1", "bt-1"]]);
+  });
+
   it("pauses with the dashboard steps that connect GitHub when Cloudflare can't see the repo", async () => {
     const { cf } = cloudflare({
       putRepoConnection: async () => {
@@ -119,16 +134,24 @@ describe("buildsStep", () => {
     expect((err as PauseError).pause.reason).toContain("+ Add account");
   });
 
-  it("pauses when the connected user has no build token, naming that user", async () => {
+  it("asks for a user API token, with the token form filled in, when the user has no build token", async () => {
     // Build tokens belong to a user, so one made by another member of the account isn't listed.
     const { cf } = cloudflare({ listBuildTokens: async () => [], getUser: async () => ({ id: "u", email: "me@example.com" }) });
     const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
     const err = await buildsStep.run(ctx).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PauseError);
-    expect((err as PauseError).pause.reason).toContain("Builds token");
-    expect((err as PauseError).pause.reason).toContain("signed in to the dashboard as me@example.com");
+    const { pause } = err as PauseError;
+    expect(pause.input).toBe("cloudflare-build-token");
+    expect(pause.actionUrl).toBe(buildTokenFormUrl("acc"));
+    expect(pause.reason).toContain("signed in as me@example.com");
 
-    // Without the user's details the message still explains what to do.
+    const url = new URL(buildTokenFormUrl("acc"));
+    expect(url.origin + url.pathname).toBe("https://dash.cloudflare.com/profile/api-tokens");
+    expect(url.searchParams.get("accountId")).toBe("acc");
+    expect(url.searchParams.get("name")).toBe("Switchyard");
+    expect(JSON.parse(url.searchParams.get("permissionGroupKeys") ?? "[]")).toContainEqual({ key: "workers_ci", type: "edit" });
+
+    // Without the user's details the message still says whose token it must be.
     const failing = cloudflare({
       listBuildTokens: async () => [],
       getUser: async () => {

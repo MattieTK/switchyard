@@ -87,6 +87,31 @@ describe("createCloudflareClient", () => {
     expect((await c.getBuild("acc", "b-1")).status).toBe("running");
   });
 
+  it("verifies its own token, registers a build token and repoints a trigger at it", async () => {
+    const { c, calls } = client([
+      ok({ id: "tok-1", status: "active" }),
+      ok({ build_token_uuid: "bt-9", build_token_name: "Switchyard", cloudflare_token_id: "tok-1" }),
+      ok({ trigger_uuid: "tr-1", trigger_name: "switchyard-preview", build_token_uuid: "bt-9" }),
+    ]);
+    expect(await c.verifyToken()).toEqual({ id: "tok-1", status: "active" });
+    expect(calls[0]?.url).toBe(`${BASE}/user/tokens/verify`);
+
+    const token = await c.createBuildToken("acc", { build_token_name: "Switchyard", build_token_secret: "secret", cloudflare_token_id: "tok-1" });
+    expect(token.build_token_uuid).toBe("bt-9");
+    expect(calls[1]?.init?.method).toBe("POST");
+    expect(calls[1]?.url).toBe(`${BASE}/accounts/acc/builds/tokens`);
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+      build_token_name: "Switchyard",
+      build_token_secret: "secret",
+      cloudflare_token_id: "tok-1",
+    });
+
+    await c.setTriggerBuildToken("acc", "tr-1", "bt-9");
+    expect(calls[2]?.init?.method).toBe("PATCH");
+    expect(calls[2]?.url).toBe(`${BASE}/accounts/acc/builds/triggers/tr-1`);
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ build_token_uuid: "bt-9" });
+  });
+
   it("joins Cloudflare error messages into the ApiError", async () => {
     const { c } = client([json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403)]);
     await expect(c.listBuildTokens("acc")).rejects.toThrow("Authentication error (10000)");

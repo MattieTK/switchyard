@@ -9,6 +9,8 @@ import { createVercelClient, type VercelClient } from "./vercel.ts";
 export interface ClientFactory {
   vercel(): Promise<VercelClient>;
   cloudflare: CloudflareClient;
+  // A client that calls with a given API token instead of the OAuth session, such as one the user pastes.
+  cloudflareWith(token: string): CloudflareClient;
   github(): Promise<GitHubClient>;
   githubAuth(): Promise<GitHubAuth>;
 }
@@ -33,6 +35,7 @@ export function createClientFactory(o: {
       return createVercelClient({ fetch: o.fetch, token: vercel.token, teamId: vercel.teamId });
     },
     cloudflare: createCloudflareClient({ fetch: o.fetch, token: o.cloudflareToken }),
+    cloudflareWith: (token) => createCloudflareClient({ fetch: o.fetch, token: async () => token }),
     async github() {
       const auth = await githubAuth();
       return createGitHubClient({ fetch: o.fetch, token: async () => auth.token });

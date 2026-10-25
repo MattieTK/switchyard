@@ -1,8 +1,8 @@
 import { Progress } from "@base-ui/react/progress";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
-import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner } from "../ui/controls.tsx";
+import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner, TextField } from "../ui/controls.tsx";
 import { CopyIcon, ExternalIcon } from "../ui/icons.tsx";
 import { StepChain } from "../ui/StepChain.tsx";
 
@@ -33,9 +33,61 @@ const JOB_STATUS: Record<Job["status"], { label: string; tone: "neutral" | "ok" 
   done: { label: "Done", tone: "ok" },
 };
 
+// Takes the API token a paused builds step asks for. The token goes to Switchyard's server once,
+// which passes it to Cloudflare, and the field is cleared afterwards.
+function BuildTokenForm({ jobId, onJob }: { jobId: string; onJob: (job: Job) => void }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onJob(await api<Job>(`/api/jobs/${jobId}/build-token`, { method: "POST", body: { token } }));
+      setToken("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (token.trim()) void submit();
+      }}
+    >
+      <TextField
+        label="API token"
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        value={token}
+        onValueChange={setToken}
+        placeholder="Paste the token here"
+      />
+      {error && <p className="small" style={{ color: "var(--err)", margin: "0 0 0.6rem" }}>{error}</p>}
+      <Button type="submit" variant="primary" busy={busy} disabled={!token.trim()}>
+        Save and continue
+      </Button>
+    </form>
+  );
+}
+
 // onCheckAgain is passed while the job is paused, so the button sits with the instructions
 // that tell the reader to select it, not only in the page header.
-function StepDetails({ step, onCheckAgain, busy }: { step: StepState; onCheckAgain?: () => void; busy?: boolean }) {
+function StepDetails({
+  step,
+  onCheckAgain,
+  busy,
+  tokenForm,
+}: {
+  step: StepState;
+  onCheckAgain?: () => void;
+  busy?: boolean;
+  tokenForm?: ReactNode;
+}) {
   const links = Object.entries(step.outputs).filter(([k]) => k in LINK_OUTPUTS);
   if (!links.length && !step.error && !step.pause) return null;
   return (
@@ -62,7 +114,7 @@ function StepDetails({ step, onCheckAgain, busy }: { step: StepState; onCheckAga
                   {step.pause.actionLabel ?? "Open"} <ExternalIcon />
                 </ButtonLink>
               )}
-              {onCheckAgain && (
+              {onCheckAgain && !step.pause.input && (
                 <Button variant="primary" busy={busy} onClick={onCheckAgain}>
                   Check again
                 </Button>
@@ -74,6 +126,7 @@ function StepDetails({ step, onCheckAgain, busy }: { step: StepState; onCheckAga
               )}
             </div>
           )}
+          {step.pause.input === "cloudflare-build-token" && tokenForm}
         </Callout>
       )}
     </>
@@ -264,6 +317,7 @@ export function JobPage({ jobId }: { jobId: string }) {
                     step={s}
                     busy={busy}
                     onCheckAgain={job.status === "paused" && s.pause ? () => void requeue("retry") : undefined}
+                    tokenForm={job.status === "paused" ? <BuildTokenForm jobId={jobId} onJob={setJob} /> : undefined}
                   />
                 ),
               }))}

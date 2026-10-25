@@ -81,6 +81,16 @@ describe("job routes", () => {
     expect((await req(`/api/jobs/${job.id}`)).status).toBe(404);
   });
 
+  it("takes a pasted build token and refuses a malformed body", async () => {
+    const submitBuildToken = vi.fn(async () => job);
+    const { req } = await makeApp({ jobs: { submitBuildToken } as unknown as JobService });
+    const post = (json: unknown) => req(`/api/jobs/${job.id}/build-token`, { method: "POST", json });
+    expect((await post({ token: "secret" })).status).toBe(200);
+    expect(submitBuildToken).toHaveBeenCalledWith(job.id, "secret");
+    expect((await post({ token: "" })).status).toBe(400);
+    expect(submitBuildToken).toHaveBeenCalledTimes(1);
+  });
+
   it("retries, starts over and returns the log", async () => {
     const jobs = { retry: vi.fn(async () => job), restart: vi.fn(async () => job), log: async () => "[clone] ok\n" } as unknown as JobService;
     const { req } = await makeApp({ jobs });

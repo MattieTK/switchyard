@@ -69,12 +69,13 @@ export function createJobService(d: {
     return id;
   }
 
-  async function requeue(id: string, reset: (job: Job) => Job, verb: string): Promise<Job> {
+  async function requeue(id: string, reset: (job: Job) => Job, verb: string, opts: { clearLog?: boolean } = {}): Promise<Job> {
     const job = await d.store.get(id);
     if (!job) throw new UserInputError("That job doesn't exist.", 404);
     if (job.status !== "failed" && job.status !== "paused") {
       throw new UserInputError(`Only failed or paused jobs can be ${verb}.`, 409);
     }
+    if (opts.clearLog) await d.store.clearLog(id);
     const next = reset(job);
     await d.store.save(next);
     d.queue.enqueue(id);
@@ -141,7 +142,7 @@ export function createJobService(d: {
     get: (id) => d.store.get(id),
 
     retry: (id) => requeue(id, resetForRetry, "retried"),
-    restart: (id) => requeue(id, resetForRestart, "started over"),
+    restart: (id) => requeue(id, resetForRestart, "started over", { clearLog: true }),
 
     log: (id) => d.store.readLog(id),
     subscribe: (id, fn) => d.events.subscribe(id, fn),

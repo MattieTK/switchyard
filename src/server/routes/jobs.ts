@@ -21,6 +21,15 @@ const startSchema = z.object({
   nextCache: z.enum(["kv", "none"]),
   values: z.record(z.string(), z.string()),
   skip: z.array(z.string()),
+  options: z
+    .object({
+      adoptionCodemods: z.boolean(),
+      eslintMigration: z.boolean(),
+      updateFlaggedPackages: z.boolean(),
+      switchToPnpm: z.boolean(),
+    })
+    .partial()
+    .optional(),
 });
 
 export function jobRoutes(d: AppDeps): Hono {

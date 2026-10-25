@@ -3,6 +3,8 @@ export interface PackageJson {
   packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  // npm, Yarn and bun workspace patterns, from either the list or the { packages } form.
+  workspaces?: string[];
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -29,11 +31,14 @@ export function parsePackageJson(text: string | null): PackageJson | null {
   if (!isPlainObject(parsed)) return null;
   const dependencies = stringRecord(parsed.dependencies);
   const devDependencies = stringRecord(parsed.devDependencies);
+  const declared = isPlainObject(parsed.workspaces) ? parsed.workspaces.packages : parsed.workspaces;
+  const workspaces = Array.isArray(declared) ? declared.filter((w): w is string => typeof w === "string") : undefined;
   return {
     ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
     ...(typeof parsed.packageManager === "string" ? { packageManager: parsed.packageManager } : {}),
     ...(dependencies ? { dependencies } : {}),
     ...(devDependencies ? { devDependencies } : {}),
+    ...(workspaces ? { workspaces } : {}),
   };
 }
 

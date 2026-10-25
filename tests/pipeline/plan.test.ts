@@ -65,6 +65,24 @@ describe("buildPlan", () => {
     ]);
     expect(values.e1).toBe("secret-1");
     expect(JSON.stringify(plan)).not.toContain("secret-1");
+    // Already on Next.js 16 and pnpm, so there's nothing to opt into.
+    expect(plan).toMatchObject({ upgrade: null, pnpmSwitch: null, options: { switchToPnpm: false } });
+  });
+
+  it("offers upgrade options and a pnpm switch to an old npm app", async () => {
+    const { plan } = await buildPlan(
+      deps({
+        github: {
+          getFile: async (_o: string, _r: string, path: string) =>
+            path.endsWith("package.json") ? '{"dependencies":{"next":"13.4.0"}}' : null,
+          listDir: async (_o: string, _r: string, path: string) =>
+            path === "" ? ["package-lock.json", "apps"] : ["package.json", "package-lock.json"],
+        },
+      }),
+      "p",
+    );
+    expect(plan.upgrade).toEqual({ from: "13.4.0", to: "16.4.1" });
+    expect(plan.pnpmSwitch).toEqual({ available: true, hint: null, reresolves: false });
   });
 
   it("adds no warning when no Worker has the planned name", async () => {
@@ -79,6 +97,26 @@ describe("buildPlan", () => {
     expect(plan.warnings[0]).toContain("my-shop");
     expect(plan.warnings[0]).toContain("replace its code and secrets");
     expect(plan.warnings[0]).toContain("Choose another name");
+  });
+
+  it("reads the adapter's plan files from the project folder when they exist", async () => {
+    const requested: string[] = [];
+    const { plan } = await buildPlan(
+      deps({
+        github: {
+          getFile: async (_o: string, _r: string, path: string) => {
+            requested.push(path);
+            if (path.endsWith("package.json")) return '{"dependencies":{"next":"16.2.0"}}';
+            return path.endsWith("next.config.js") ? 'module.exports = { output: "standalone" }' : null;
+          },
+          listDir: async (_o: string, _r: string, path: string) =>
+            path === "" ? ["pnpm-lock.yaml", "apps"] : ["package.json", "next.config.js"],
+        },
+      }),
+      "p",
+    );
+    expect(requested.filter((p) => p.includes("next.config"))).toEqual(["apps/web/next.config.js"]);
+    expect(plan.warnings).toEqual([expect.stringContaining('output: "standalone"')]);
   });
 
   it("passes on the adapter's warnings, such as a Next.js upgrade", async () => {

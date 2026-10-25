@@ -2,7 +2,7 @@ import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
 import { GITHUB_APP_INSTALL_URL, MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
-import { execString } from "../../translate/package-manager.ts";
+import { execString, runScriptCommand } from "../../translate/package-manager.ts";
 import { buildDashboardUrl, interpretBuild } from "../build-status.ts";
 import { PauseError, type Step } from "../types.ts";
 import { requireOutput, requireRepo } from "./shared.ts";
@@ -56,6 +56,9 @@ export const buildsStep: Step = {
 
     const existing = await cf.listTriggers(accountId, workerTag);
     const exec = (line: string) => execString(plan.packageManager, line);
+    const script = ctx.output("convert").buildScript;
+    const run = script ? runScriptCommand(plan.packageManager, script) : null;
+    const buildCommand = run ? [run.cmd, ...run.args].join(" ") : exec("cf build");
     const base = {
       external_script_id: workerTag,
       repo_connection_uuid: connection,
@@ -71,7 +74,7 @@ export const buildsStep: Step = {
     const production = await ensure({
       ...base,
       trigger_name: PRODUCTION_TRIGGER,
-      build_command: exec("cf build"),
+      build_command: buildCommand,
       deploy_command: exec("cf deploy --prebuilt"),
       branch_includes: [repo.productionBranch],
       branch_excludes: [],
@@ -79,7 +82,7 @@ export const buildsStep: Step = {
     const preview = await ensure({
       ...base,
       trigger_name: PREVIEW_TRIGGER,
-      build_command: exec("cf build"),
+      build_command: buildCommand,
       deploy_command: PREVIEW_DEPLOY_COMMAND,
       branch_includes: ["*"],
       branch_excludes: [repo.productionBranch],

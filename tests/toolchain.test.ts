@@ -1,4 +1,4 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensurePackageManager } from "../src/toolchain.ts";
@@ -49,6 +49,41 @@ describe("ensurePackageManager", () => {
     ]);
     expect(await readdir(binDir)).toEqual([]);
     expect(logs).toEqual(["pnpm isn't installed, so Switchyard set it up through corepack (version 10.0.0)."]);
+  });
+
+  it("sets up the version packageManager asks for when another one is installed", async () => {
+    const cwd = join(binDir, "..");
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ packageManager: "yarn@1.22.22+sha512.abc" }));
+    let shim = false;
+    const { run, calls } = fakeRunner((cmd) => {
+      if (cmd === "corepack") shim = true;
+      return { code: 0, output: shim ? "1.22.22\n" : "4.18.1\n" };
+    });
+    const logs: string[] = [];
+    await ensurePackageManager({ pm: "yarn", cwd, run, binDir, log: (l) => logs.push(l) });
+    expect(calls.map((c) => c.cmd)).toEqual(["yarn", "corepack", "yarn"]);
+    expect(logs).toEqual([
+      "This project asks for yarn 1.22.22, so Switchyard set it up through corepack instead of the installed 4.18.1 (version 1.22.22).",
+    ]);
+  });
+
+  it("uses the installed version when it matches packageManager", async () => {
+    const cwd = join(binDir, "..");
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ packageManager: "yarn@4.18.1" }));
+    const { run, calls } = fakeRunner(() => ({ code: 0, output: "4.18.1\n" }));
+    await ensurePackageManager({ pm: "yarn", cwd, run, binDir, log: () => {} });
+    expect(calls.map((c) => c.cmd)).toEqual(["yarn"]);
+  });
+
+  it("keeps the installed version when corepack can't provide the one packageManager asks for", async () => {
+    const cwd = join(binDir, "..");
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ packageManager: "yarn@1.22.22" }));
+    const { run } = fakeRunner((cmd) => (cmd === "corepack" ? { code: 1, output: "offline" } : { code: 0, output: "4.18.1\n" }));
+    const logs: string[] = [];
+    await ensurePackageManager({ pm: "yarn", cwd, run, binDir, log: (l) => logs.push(l) });
+    expect(logs).toEqual([
+      "Warning: this project asks for yarn 1.22.22, and Switchyard couldn't set it up through corepack, so it uses the installed 4.18.1.",
+    ]);
   });
 
   it("explains how to install yarn when corepack can't provide it", async () => {

@@ -5,7 +5,7 @@ import { UserInputError } from "../errors.ts";
 import { missingInputs, skipEntries, type EnvValues } from "../translate/env-plan.ts";
 import type { JobEvents } from "./events.ts";
 import type { JobStore } from "./job-store.ts";
-import { buildPlan as defaultBuildPlan, type MigrationPlan } from "./plan.ts";
+import { buildPlan as defaultBuildPlan, DEFAULT_PLAN_OPTIONS, type MigrationPlan, type PlanOptions } from "./plan.ts";
 import type { JobQueue } from "./queue.ts";
 import { resetForRetry } from "./runner.ts";
 import type { Job, JobEvent } from "./types.ts";
@@ -16,6 +16,8 @@ export interface StartInput {
   nextCache: NextCachePreset;
   values: Record<string, string>;
   skip: string[];
+  // Upgrade options the user ticked. Missing ones are off.
+  options?: Partial<PlanOptions>;
 }
 
 export interface JobService {
@@ -29,6 +31,24 @@ export interface JobService {
 }
 
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+// Applies the options the user ticked, refusing any the plan didn't offer. Choosing pnpm
+// makes it the plan's package manager, so every later step uses it.
+function applyOptions(plan: MigrationPlan, chosen: Partial<PlanOptions> = {}): MigrationPlan {
+  const options: PlanOptions = { ...DEFAULT_PLAN_OPTIONS, ...chosen };
+  const upgradeOnly = (["adoptionCodemods", "eslintMigration", "updateFlaggedPackages"] as const).filter((o) => options[o]);
+  if (upgradeOnly.length && !plan.upgrade) {
+    throw new UserInputError("Upgrade options only apply to projects Switchyard upgrades. Build the plan again.");
+  }
+  if (options.switchToPnpm && !plan.pnpmSwitch?.available) {
+    throw new UserInputError(
+      plan.pnpmSwitch && !plan.pnpmSwitch.available ? plan.pnpmSwitch.reason : "This project can't switch to pnpm.",
+    );
+  }
+  return options.switchToPnpm
+    ? { ...plan, options, packageManager: "pnpm", switchedFrom: plan.packageManager }
+    : { ...plan, options };
+}
 
 export function createJobService(d: {
   store: JobStore;
@@ -89,7 +109,10 @@ export function createJobService(d: {
         if (missing.length) {
           throw new UserInputError(`Enter a value, or choose Skip, for: ${missing.map((e) => e.key).join(", ")}.`);
         }
-        const plan: MigrationPlan = { ...draft.plan, env, workerName: input.workerName, nextCache: input.nextCache };
+        const plan = applyOptions(
+          { ...draft.plan, env, workerName: input.workerName, nextCache: input.nextCache },
+          input.options,
+        );
         job = await d.store.create(plan, draft.accountId, values);
       } catch (e) {
         // Put the plan back so the user can correct the input and approve again. A newer plan

@@ -76,7 +76,9 @@ export function jobRoutes(d: AppDeps): Hono {
       const toSSE = (e: JobEvent) =>
         e.type === "job"
           ? { event: "job", data: JSON.stringify(e.job) }
-          : { event: "log", data: JSON.stringify({ step: e.step, line: e.line }) };
+          : e.type === "log"
+            ? { event: "log", data: JSON.stringify({ step: e.step, line: e.line }) }
+            : { event: "activity", data: JSON.stringify({ step: e.step, text: e.text }) };
 
       // Subscribe before reading the snapshot so no event falls in the gap.
       // Events that arrive until the snapshot is written are held in order.

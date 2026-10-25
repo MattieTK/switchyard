@@ -1,6 +1,7 @@
 import { CommandError } from "../exec.ts";
 import { isAuthError, type Service } from "../http.ts";
 import type { Redactor } from "../redact.ts";
+import { activityFromLine, describeCommand } from "./activity.ts";
 import type { JobEvents } from "./events.ts";
 import type { JobStore } from "./job-store.ts";
 import { PauseError, type Job, type PipelineDeps, type Step, type StepContext } from "./types.ts";
@@ -44,17 +45,33 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
     delete state.pause;
     await publish();
 
+    const announce = (text: string | null) => {
+      if (text) d.events.emit({ type: "activity", jobId, step: step.id, text: d.redactor.redact(text) });
+    };
     const log = (line: string) => {
       const clean = d.redactor.redact(line);
       void d.store
         .appendLog(jobId, `[${step.id}] ${clean}`)
         .catch(() => console.error(`Could not write the log for job ${jobId}`));
       d.events.emit({ type: "log", jobId, step: step.id, line: clean });
+      announce(activityFromLine(clean));
+    };
+    // Each command a step starts, and each package manager it sets up, is announced first.
+    const deps: PipelineDeps = {
+      ...d.pipeline,
+      run: (cmd, args, opts) => {
+        announce(describeCommand(cmd, args));
+        return d.pipeline.run(cmd, args, opts);
+      },
+      ensurePackageManager: (pm, cwd, onLine) => {
+        announce(`Setting up ${pm}`);
+        return d.pipeline.ensurePackageManager(pm, cwd, onLine);
+      },
     };
     const ctx: StepContext = {
       job,
       values,
-      deps: d.pipeline,
+      deps,
       log,
       addSecret: (v) => d.redactor.add(v),
       outputs: state.outputs,

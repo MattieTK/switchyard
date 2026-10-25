@@ -123,6 +123,10 @@ describe("job routes", () => {
     const second = decoder.decode((await reader.read()).value);
     expect(second).toContain("event: log");
     expect(second).toContain('"line":"hello"');
+    listener?.({ type: "activity", jobId: job.id, step: "clone", text: "Cloning the repository" });
+    const third = decoder.decode((await reader.read()).value);
+    expect(third).toContain("event: activity");
+    expect(third).toContain('"text":"Cloning the repository"');
     await reader.cancel();
   });
 

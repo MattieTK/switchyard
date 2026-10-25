@@ -1,5 +1,6 @@
 import { Progress } from "@base-ui/react/progress";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { activityFromLine } from "../../../src/pipeline/activity.ts";
 import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner, TextField } from "../ui/controls.tsx";
@@ -133,6 +134,16 @@ function StepDetails({
   );
 }
 
+// The latest activity the saved log shows, so a page opened mid-step has a label at once.
+function latestActivity(lines: string[]): { step: StepId; text: string } | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = lines[i]?.match(/^\[([a-z-]+)\] (.*)$/);
+    const text = match?.[2] ? activityFromLine(match[2]) : null;
+    if (match && text) return { step: match[1] as StepId, text };
+  }
+  return null;
+}
+
 function LogLine({ line }: { line: string }) {
   const match = line.match(/^(\[[a-z-]+\] )(.*)$/);
   if (!match) return <>{line}</>;
@@ -180,6 +191,8 @@ export function JobPage({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  // What the running step is doing, from the server's activity events.
+  const [activity, setActivity] = useState<{ step: StepId; text: string } | null>(null);
   const [logCopied, setLogCopied] = useState(false);
 
   useEffect(() => {
@@ -189,9 +202,14 @@ export function JobPage({ jobId }: { jobId: string }) {
     apiText(`/api/jobs/${jobId}/log`)
       .then((text) => {
         if (cancelled) return;
-        setLines(text.split("\n").filter(Boolean).slice(-MAX_LINES));
+        const saved = text.split("\n").filter(Boolean);
+        setLines(saved.slice(-MAX_LINES));
+        setActivity(latestActivity(saved));
         source = new EventSource(authUrl(`/api/jobs/${jobId}/events`));
         source.addEventListener("job", (e) => setJob(JSON.parse((e as MessageEvent<string>).data) as Job));
+        source.addEventListener("activity", (e) =>
+          setActivity(JSON.parse((e as MessageEvent<string>).data) as { step: StepId; text: string }),
+        );
         source.addEventListener("log", (e) => {
           const { step, line } = JSON.parse((e as MessageEvent<string>).data) as { step: StepId; line: string };
           setLines((l) => [...l, `[${step}] ${line}`].slice(-MAX_LINES));
@@ -255,6 +273,9 @@ export function JobPage({ jobId }: { jobId: string }) {
   const done = job.steps.filter((s) => s.status === "done").length;
   const status = JOB_STATUS[job.status];
   const canRetry = job.status === "failed" || job.status === "paused";
+  // Shown beside the log while a step runs: its latest activity, or its title until one arrives.
+  const running = job.status === "running" ? job.steps.find((s) => s.status === "running") : undefined;
+  const activityLabel = running ? (activity?.step === running.id ? activity.text : STEP_TITLES[running.id]) : null;
 
   return (
     <main className="main-wide">
@@ -349,7 +370,17 @@ export function JobPage({ jobId }: { jobId: string }) {
 
         <Card
           className="log-card"
-          title="Log"
+          title={
+            <>
+              Log
+              {activityLabel && (
+                <span key={activityLabel} className="log-activity">
+                  <Spinner size="sm" />
+                  <span className="log-activity-text">{activityLabel}</span>
+                </span>
+              )}
+            </>
+          }
           aside={
             <div className="row">
               <span className="muted small">{lines.length} lines</span>

@@ -41,6 +41,34 @@ describe("runJob", () => {
     expect(await store.readValues(job.id)).toEqual({});
   });
 
+  it("announces what a step is doing from the commands it runs and the lines they print", async () => {
+    const { deps, job, seen } = await setup();
+    const ran: string[] = [];
+    const pipeline = {
+      run: async (cmd: string, args: string[]) => {
+        ran.push([cmd, ...args].join(" "));
+        return { code: 0, output: "", stdout: "", stderr: "" };
+      },
+      ensurePackageManager: async () => {},
+    } as unknown as PipelineDeps;
+    const steps = [
+      step("convert", async (ctx) => {
+        await ctx.deps.ensurePackageManager("pnpm", "/w", ctx.log);
+        await ctx.deps.run("pnpm", ["install"], { cwd: "/w" });
+        await ctx.deps.run("git", ["status", "--porcelain"], { cwd: "/w" });
+        ctx.log("Removing node_modules/");
+        ctx.log("Progress: resolved 1");
+      }),
+    ];
+    await runJob(job.id, steps, { ...deps, pipeline });
+    expect(ran).toEqual(["pnpm install", "git status --porcelain"]);
+    expect(seen.filter((e) => e.type === "activity")).toEqual([
+      { type: "activity", jobId: job.id, step: "convert", text: "Setting up pnpm" },
+      { type: "activity", jobId: job.id, step: "convert", text: "Installing dependencies" },
+      { type: "activity", jobId: job.id, step: "convert", text: "Removing node_modules/" },
+    ]);
+  });
+
   it("pauses on PauseError and resumes from that step after a retry", async () => {
     const { deps, job, store } = await setup();
     let attempts = 0;

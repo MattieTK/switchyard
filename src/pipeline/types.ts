@@ -39,7 +39,11 @@ export interface Job {
   steps: StepState[];
 }
 
-export type JobEvent = { type: "log"; jobId: string; step: StepId; line: string } | { type: "job"; job: Job };
+export type JobEvent =
+  | { type: "log"; jobId: string; step: StepId; line: string }
+  // What the running step is doing right now, for display only; not saved.
+  | { type: "activity"; jobId: string; step: StepId; text: string }
+  | { type: "job"; job: Job };
 
 export interface PipelineDeps {
   run: CommandRunner;

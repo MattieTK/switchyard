@@ -33,7 +33,9 @@ const JOB_STATUS: Record<Job["status"], { label: string; tone: "neutral" | "ok" 
   done: { label: "Done", tone: "ok" },
 };
 
-function StepDetails({ step }: { step: StepState }) {
+// onCheckAgain is passed while the job is paused, so the button sits with the instructions
+// that tell the reader to select it, not only in the page header.
+function StepDetails({ step, onCheckAgain, busy }: { step: StepState; onCheckAgain?: () => void; busy?: boolean }) {
   const links = Object.entries(step.outputs).filter(([k]) => k in LINK_OUTPUTS);
   if (!links.length && !step.error && !step.pause) return null;
   return (
@@ -53,12 +55,17 @@ function StepDetails({ step }: { step: StepState }) {
       {step.pause && (
         <Callout tone="warning">
           <p style={{ margin: 0 }}>{step.pause.reason}</p>
-          {(step.pause.actionUrl || step.pause.reconnect) && (
+          {(step.pause.actionUrl || step.pause.reconnect || onCheckAgain) && (
             <div className="row" style={{ marginTop: "0.6rem" }}>
               {step.pause.actionUrl && (
                 <ButtonLink href={step.pause.actionUrl} target="_blank" rel="noreferrer">
                   {step.pause.actionLabel ?? "Open"} <ExternalIcon />
                 </ButtonLink>
+              )}
+              {onCheckAgain && (
+                <Button variant="primary" busy={busy} onClick={onCheckAgain}>
+                  Check again
+                </Button>
               )}
               {step.pause.reconnect && (
                 <span className="small">
@@ -252,7 +259,13 @@ export function JobPage({ jobId }: { jobId: string }) {
                 id: s.id,
                 title: STEP_TITLES[s.id],
                 status: s.status,
-                details: <StepDetails step={s} />,
+                details: (
+                  <StepDetails
+                    step={s}
+                    busy={busy}
+                    onCheckAgain={job.status === "paused" && s.pause ? () => void requeue("retry") : undefined}
+                  />
+                ),
               }))}
             />
           </Card>

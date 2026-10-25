@@ -60,3 +60,14 @@ The generated `switchyard-entry.ts` runs the route's `scheduled` handler under `
 
 - `vinext init` writes `"vinext": "^1.1.0"`, so a new release (1.2.0) was installed. The pin applies to `init` only.
 - `cf dev` only exposes `.dev.vars` keys that are declared with `bindings.secret()`. Development-only variables aren't declared, so they are missing locally. This is a known gap for now.
+
+## Spike 7 – package manager version in Workers Builds: reads `packageManager` (2026-10-23)
+
+A converted pnpm app with `"packageManager": "pnpm@9.15.9"` was built three times on the account "Mattietk@gmail.com's Account". The temporary Worker, trigger and repo connection were deleted afterwards. The build command printed `pnpm --version` before `cf build`.
+
+- With no build variables, the build log said "Detected the following tools from environment: pnpm@9.15.9", installed with pnpm v9.15.9 and printed `9.15.9`. Workers Builds' default would have been 10.11.1, so it reads `packageManager`.
+- With `PNPM_VERSION=9.14.4` on the trigger, it still used 9.15.9. When both are set, `packageManager` wins.
+
+Switchyard therefore only writes `packageManager` (the pnpm switch, the Yarn 1 pin) and sets no version variables.
+
+Two notes on `cf` 1.0.0-beta.20 from this run: list-valued flags can't express an empty list (`[]` is sent as the string `"[]"`), so trigger bodies need `--body` with raw JSON, and deletes need `--force` when not interactive.

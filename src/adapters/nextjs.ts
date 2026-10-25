@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { satisfies, validRange } from "semver";
 import { CLOUDFLARE_BUILD_SCRIPT, cloudflareBuildScript } from "../codegen/build-script.ts";
+import { shimMissingExports } from "../codegen/config-edit.ts";
 import { preapproveYarnPackages, quarantinedPackages } from "../codegen/toolchain-files.ts";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, CommandError, type RunResult, runOrThrow } from "../exec.ts";
@@ -324,6 +325,19 @@ async function createVinextStub(dir: string): Promise<string | null> {
   return null;
 }
 
+// webpack only warns about an import of a name the module doesn't export, which plain .js
+// files do when they import a TypeScript type, but Vite's bundler fails the build.
+async function allowMissingExports(dir: string): Promise<void> {
+  for (const name of VITE_CONFIG_FILES) {
+    const path = join(dir, name);
+    const config = await readFile(path, "utf8").catch(() => null);
+    if (config === null) continue;
+    const edited = shimMissingExports(config);
+    if (edited !== null) await writeFile(path, edited);
+    return;
+  }
+}
+
 // cf build sets this for the Cloudflare build only.
 const CLOUDFLARE_BUILD_ENV = "CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT";
 
@@ -483,6 +497,7 @@ export const nextjsAdapter: Adapter = {
     const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
     const stubWarning = await createVinextStub(ctx.dir);
     if (stubWarning) warnings.push(stubWarning);
+    await allowMissingExports(ctx.dir);
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
     if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));

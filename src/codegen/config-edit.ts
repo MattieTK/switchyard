@@ -52,3 +52,33 @@ export function editCloudflareConfig(source: string, edits: ConfigEdits): string
 
   return generateCode(mod).code;
 }
+
+const SHIM_COMMENT = [
+  " Imports of names a module doesn't export, such as TypeScript types imported in .js files,",
+  " become undefined with a build warning, as they did with webpack, instead of failing the build.",
+];
+
+// Sets build.rolldownOptions.shimMissingExports in the vite.config vinext init generated.
+// Returns null when the project already sets it or the config isn't
+// `export default defineConfig({ ... })`, which Switchyard leaves alone.
+export function shimMissingExports(source: string): string | null {
+  const mod = parseModule(source);
+  const exported = mod.exports.default;
+  const config = exported?.$type === "function-call" ? exported.$args[0] : undefined;
+  if (config?.$type !== "object") return null;
+  const parents = [config.build, config.build?.rolldownOptions];
+  if (parents.some((p) => p !== undefined && p.$type !== "object")) return null;
+  if (config.build?.rolldownOptions?.shimMissingExports !== undefined) return null;
+
+  // The comment goes on the outermost key Switchyard adds.
+  const added = !config.build ? "build" : !config.build.rolldownOptions ? "rolldownOptions" : "shimMissingExports";
+  config.build ??= {};
+  config.build.rolldownOptions ??= {};
+  config.build.rolldownOptions.shimMissingExports = true;
+  const owner = added === "build" ? config : added === "rolldownOptions" ? config.build : config.build.rolldownOptions;
+  const property = owner.$ast.properties.find(
+    (p: { key?: { name?: string; value?: string } }) => (p.key?.name ?? p.key?.value) === added,
+  );
+  if (property) property.comments = SHIM_COMMENT.map((value) => ({ type: "CommentLine", value, leading: true }));
+  return generateCode(mod).code;
+}

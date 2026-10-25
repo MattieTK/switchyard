@@ -16,6 +16,7 @@ export interface JobStore {
   appendLog(id: string, line: string): Promise<void>;
   flush(id: string): Promise<void>;
   readLog(id: string): Promise<string>;
+  clearLog(id: string): Promise<void>;
   recoverInterrupted(): Promise<{ failed: string[]; queued: string[] }>;
 }
 
@@ -96,6 +97,12 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
     async readLog(id) {
       if (!UUID.test(id)) return "";
       return readFile(logFile(id), "utf8").catch(() => "");
+    },
+    clearLog(id) {
+      // Joins the append chain, so lines logged before the clear don't land after it.
+      const next = (logChains.get(id) ?? Promise.resolve()).then(() => rm(logFile(id), { force: true }));
+      logChains.set(id, next.catch(() => undefined));
+      return next;
     },
     async recoverInterrupted() {
       const failed: string[] = [];

@@ -64,6 +64,18 @@ describe("createJobStore", () => {
     expect(await store.readLog(job.id)).toBe("one\ntwo\nthree\n");
   });
 
+  it("clears the log after the appends already issued, and keeps later ones", async () => {
+    const store = createJobStore(await makeTempDir());
+    const job = await store.create(samplePlan, "acc", {});
+    void store.appendLog(job.id, "old");
+    await store.clearLog(job.id);
+    expect(await store.readLog(job.id)).toBe("");
+    await store.appendLog(job.id, "new");
+    expect(await store.readLog(job.id)).toBe("new\n");
+    // A job without a log yet clears without an error.
+    await expect(store.clearLog((await store.create(samplePlan, "acc", {})).id)).resolves.toBeUndefined();
+  });
+
   it("marks steps that were running when Switchyard stopped as failed, and reports queued jobs", async () => {
     const store = createJobStore(await makeTempDir());
     const running = await store.create(samplePlan, "acc", {});

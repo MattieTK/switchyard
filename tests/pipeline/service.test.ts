@@ -172,12 +172,15 @@ describe("createJobService", () => {
   it("starts only failed or paused jobs over, from the first step", async () => {
     const { service, store, queue } = await setup({ accountId: "acc" });
     const job = await store.create(plan, "acc", {});
+    await store.appendLog(job.id, "[build] failed");
     await expect(service.restart(job.id)).rejects.toThrow("Only failed or paused");
+    expect(await store.readLog(job.id)).toBe("[build] failed\n");
     job.status = "failed";
     job.steps[0]!.status = "done";
     job.steps[2]!.status = "failed";
     await store.save(job);
     const restarted = await service.restart(job.id);
+    expect(await store.readLog(job.id)).toBe("");
     expect(restarted.status).toBe("queued");
     expect(restarted.steps.every((s) => s.status === "pending")).toBe(true);
     expect((await store.get(job.id))?.steps[0]?.status).toBe("pending");

@@ -157,10 +157,19 @@ export function JobPage({ jobId }: { jobId: string }) {
   // Retry runs the step that stopped again; restart runs every step again from the clone.
   const requeue = async (action: "retry" | "restart") => {
     setBusy(true);
+    // A restart clears the saved log. Clearing the lines first means the new run's first
+    // lines, which can arrive before the response, aren't cleared along with the old ones.
+    if (action === "restart") setLines([]);
     try {
       setJob(await api<Job>(`/api/jobs/${jobId}/${action}`, { method: "POST" }));
     } catch (e) {
       setError((e as Error).message);
+      // The log is unchanged when the restart was refused, so show it again.
+      if (action === "restart") {
+        void apiText(`/api/jobs/${jobId}/log`)
+          .then((text) => setLines(text.split("\n").filter(Boolean).slice(-MAX_LINES)))
+          .catch(() => {});
+      }
     } finally {
       setBusy(false);
     }

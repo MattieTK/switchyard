@@ -120,6 +120,7 @@ export function JobPage({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [logCopied, setLogCopied] = useState(false);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -153,14 +154,27 @@ export function JobPage({ jobId }: { jobId: string }) {
     };
   }, [jobId]);
 
-  const retry = async () => {
+  // Retry runs the step that stopped again; restart runs every step again from the clone.
+  const requeue = async (action: "retry" | "restart") => {
     setBusy(true);
     try {
-      setJob(await api<Job>(`/api/jobs/${jobId}/retry`, { method: "POST" }));
+      setJob(await api<Job>(`/api/jobs/${jobId}/${action}`, { method: "POST" }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Copies the whole saved log, which can be longer than the lines shown here.
+  const copyLog = async () => {
+    try {
+      const text = await apiText(`/api/jobs/${jobId}/log`).catch(() => lines.join("\n"));
+      await navigator.clipboard.writeText(text);
+      setLogCopied(true);
+      setTimeout(() => setLogCopied(false), 1500);
+    } catch (e) {
+      setError(`Couldn't copy the log: ${(e as Error).message}`);
     }
   };
 
@@ -195,7 +209,12 @@ export function JobPage({ jobId }: { jobId: string }) {
               {status.label}
             </Pill>
             {canRetry && (
-              <Button variant="primary" busy={busy} onClick={() => void retry()}>
+              <Button busy={busy} onClick={() => void requeue("restart")} title="Run every step again, from the clone">
+                Start over
+              </Button>
+            )}
+            {canRetry && (
+              <Button variant="primary" busy={busy} onClick={() => void requeue("retry")}>
                 {job.status === "paused" ? "Check again" : "Retry"}
               </Button>
             )}
@@ -252,7 +271,18 @@ export function JobPage({ jobId }: { jobId: string }) {
           )}
         </div>
 
-        <Card className="log-card" title="Log" aside={<span className="muted small">{lines.length} lines</span>}>
+        <Card
+          className="log-card"
+          title="Log"
+          aside={
+            <div className="row">
+              <span className="muted small">{lines.length} lines</span>
+              <Button variant="ghost" onClick={() => void copyLog()} disabled={lines.length === 0}>
+                <CopyIcon /> {logCopied ? "Copied" : "Copy log"}
+              </Button>
+            </div>
+          }
+        >
           <Log lines={lines} />
         </Card>
       </div>

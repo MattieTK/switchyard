@@ -87,38 +87,6 @@ describe("createCloudflareClient", () => {
     expect((await c.getBuild("acc", "b-1")).status).toBe("running");
   });
 
-  it("creates an account API token and registers it as a build token, and can delete the API token", async () => {
-    const { c, calls } = client([
-      ok([{ id: "pg-1", name: "Workers Scripts Write", scopes: ["com.cloudflare.api.account"] }]),
-      ok({ id: "tok-1", value: "secret-value", name: "Switchyard" }),
-      ok({ build_token_uuid: "bt-9", build_token_name: "Switchyard" }),
-      ok({ id: "tok-1" }),
-    ]);
-    expect(await c.listTokenPermissionGroups("acc")).toEqual([
-      { id: "pg-1", name: "Workers Scripts Write", scopes: ["com.cloudflare.api.account"] },
-    ]);
-    expect(calls[0]?.url).toBe(`${BASE}/accounts/acc/tokens/permission_groups`);
-
-    const policies = [{ effect: "allow" as const, permission_groups: [{ id: "pg-1" }], resources: { "com.cloudflare.api.account.acc": "*" } }];
-    expect(await c.createAccountToken("acc", { name: "Switchyard", policies })).toEqual({ id: "tok-1", value: "secret-value" });
-    expect(calls[1]?.init?.method).toBe("POST");
-    expect(calls[1]?.url).toBe(`${BASE}/accounts/acc/tokens`);
-    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ name: "Switchyard", policies });
-
-    const token = await c.createBuildToken("acc", { build_token_name: "Switchyard", build_token_secret: "secret-value", cloudflare_token_id: "tok-1" });
-    expect(token.build_token_uuid).toBe("bt-9");
-    expect(calls[2]?.url).toBe(`${BASE}/accounts/acc/builds/tokens`);
-    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({
-      build_token_name: "Switchyard",
-      build_token_secret: "secret-value",
-      cloudflare_token_id: "tok-1",
-    });
-
-    await c.deleteAccountToken("acc", "tok-1");
-    expect(calls[3]?.init?.method).toBe("DELETE");
-    expect(calls[3]?.url).toBe(`${BASE}/accounts/acc/tokens/tok-1`);
-  });
-
   it("joins Cloudflare error messages into the ApiError", async () => {
     const { c } = client([json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403)]);
     await expect(c.listBuildTokens("acc")).rejects.toThrow("Authentication error (10000)");

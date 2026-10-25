@@ -542,6 +542,47 @@ export default defineConfig({
     );
   });
 
+  it("lets the build continue past imports of names a module doesn't export, as webpack did", async () => {
+    // What vinext init generates, trimmed.
+    const config = `import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import path from "node:path";
+
+export default defineConfig({
+  plugins: [vinext(), cloudflare()],
+  css: {
+    modules: {
+      generateScopedName(name: string, filename: string) {
+        return path.relative(import.meta.dirname, filename) + name;
+      },
+    },
+  },
+});
+`;
+    const { run } = fakeRunner(async (_cmd, args) => {
+      if (args.includes("init")) await writeFile(join(dir, "vite.config.ts"), config);
+      return { code: 0, output: "" };
+    });
+    await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    const edited = await readFile(join(dir, "vite.config.ts"), "utf8");
+    expect(edited).toMatch(/build: \{\s*rolldownOptions: \{\s*shimMissingExports: true/);
+    expect(edited).toContain("generateScopedName(name: string, filename: string)");
+
+    // A value the project set stays as it is, and a config of another shape is left alone.
+    for (const own of [
+      "export default defineConfig({ build: { rolldownOptions: { shimMissingExports: false } } });\n",
+      "export default defineConfig(({ mode }) => ({ plugins: [] }));\n",
+    ]) {
+      const { run } = fakeRunner(async (_cmd, args) => {
+        if (args.includes("init")) await writeFile(join(dir, "vite.config.ts"), own);
+        return { code: 0, output: "" };
+      });
+      await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(dir, "vite.config.ts"), "utf8")).toBe(own);
+    }
+  });
+
   it("makes output: standalone apply only outside the Cloudflare build", async () => {
     for (const [file, before, after] of [
       ["next.config.mjs", 'export default { output: "standalone" };\n', 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n'],

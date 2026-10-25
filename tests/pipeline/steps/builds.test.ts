@@ -105,7 +105,7 @@ describe("buildsStep", () => {
     expect(ctx.outputs).toEqual({ productionTrigger: "old-1", previewTrigger: "old-2" });
   });
 
-  it("pauses with the GitHub App link when Cloudflare can't see the repo", async () => {
+  it("pauses with the dashboard steps that connect GitHub when Cloudflare can't see the repo", async () => {
     const { cf } = cloudflare({
       putRepoConnection: async () => {
         throw new ApiError("cloudflare", 400, "repository not accessible");
@@ -114,7 +114,9 @@ describe("buildsStep", () => {
     const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
     const err = await buildsStep.run(ctx).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PauseError);
-    expect((err as PauseError).pause.actionUrl).toBe("https://github.com/apps/cloudflare-workers-and-pages/installations/new");
+    // Installing the GitHub App from GitHub alone doesn't link it to the Cloudflare account.
+    expect((err as PauseError).pause.actionUrl).toBe("https://dash.cloudflare.com/acc/workers-and-pages");
+    expect((err as PauseError).pause.reason).toContain("+ Add account");
   });
 
   it("pauses when the account has no build token", async () => {

@@ -12,9 +12,6 @@ export const MIGRATION_BRANCH = "cloudflare-migration";
 export const PRODUCTION_TRIGGER = "switchyard-production";
 export const PREVIEW_TRIGGER = "switchyard-preview";
 
-// Where the user installs the Cloudflare GitHub App when Cloudflare can't see the repository.
-export const GITHUB_APP_INSTALL_URL = "https://github.com/apps/cloudflare-workers-and-pages/installations/new";
-
 // SWITCHYARD_PORT and SWITCHYARD_CLOUDFLARE_CLIENT_ID are for development, so a second copy can
 // run beside a normal one (with SWITCHYARD_HOME for its data). Another port needs an OAuth
 // client that lists that port's callback URL.

@@ -1,5 +1,5 @@
 import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
-import { GITHUB_APP_INSTALL_URL, MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
+import { MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
 import { execString, runScriptCommand } from "../../translate/package-manager.ts";
@@ -36,9 +36,11 @@ export const buildsStep: Step = {
     } catch (e) {
       if (e instanceof ApiError && !e.auth && e.status >= 400 && e.status < 500) {
         throw new PauseError({
-          reason: `Cloudflare couldn't connect to ${repo.owner}/${repo.name}. Install the Cloudflare Workers and Pages GitHub App on ${repo.owner} with access to this repository, then select Check again. (${e.message})`,
-          actionLabel: "Install the GitHub App",
-          actionUrl: GITHUB_APP_INSTALL_URL,
+          // Installing the GitHub App from GitHub alone doesn't link it to the Cloudflare
+          // account (error 8000008); the dashboard's Add account flow does.
+          reason: `Cloudflare couldn't connect to ${repo.owner}/${repo.name}. In Workers & Pages, select Create application, then Connect to Git, choose + Add account and Install & Authorize for ${repo.owner} with access to this repository. Once ${repo.owner} is listed you can leave that page, then select Check again. (${e.message})`,
+          actionLabel: "Open Workers & Pages",
+          actionUrl: `https://dash.cloudflare.com/${accountId}/workers-and-pages`,
         });
       }
       throw e;

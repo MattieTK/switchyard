@@ -28,6 +28,25 @@ export interface BuildToken {
   build_token_name: string;
 }
 
+export interface BuildTokenInput {
+  build_token_name: string;
+  build_token_secret: string;
+  cloudflare_token_id: string;
+}
+
+export interface PermissionGroup {
+  id: string;
+  name: string;
+  // Which resources the permission applies to, such as com.cloudflare.api.account or ….account.zone.
+  scopes: string[];
+}
+
+export interface TokenPolicy {
+  effect: "allow";
+  permission_groups: { id: string }[];
+  resources: Record<string, unknown>;
+}
+
 export interface RepoConnectionInput {
   provider_type: "github";
   provider_account_id: string;
@@ -70,6 +89,11 @@ export interface CloudflareClient {
   listZones(accountId: string): Promise<CloudflareZone[]>;
   getWorkerTag(accountId: string, scriptName: string): Promise<string | null>;
   listBuildTokens(accountId: string): Promise<BuildToken[]>;
+  createBuildToken(accountId: string, input: BuildTokenInput): Promise<BuildToken>;
+  listTokenPermissionGroups(accountId: string): Promise<PermissionGroup[]>;
+  // Account API tokens; the value is only ever returned here, on creation.
+  createAccountToken(accountId: string, input: { name: string; policies: TokenPolicy[] }): Promise<{ id: string; value: string }>;
+  deleteAccountToken(accountId: string, tokenId: string): Promise<void>;
   putRepoConnection(accountId: string, input: RepoConnectionInput): Promise<string>;
   listTriggers(accountId: string, workerTag: string): Promise<BuildTrigger[]>;
   createTrigger(accountId: string, input: TriggerInput): Promise<BuildTrigger>;
@@ -132,6 +156,16 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       return scripts.find((s) => s.id === scriptName)?.tag ?? null;
     },
     listBuildTokens: (accountId) => call<BuildToken[]>(`${acct(accountId)}/builds/tokens`),
+    createBuildToken: (accountId, input) =>
+      call<BuildToken>(`${acct(accountId)}/builds/tokens`, { method: "POST", body: input }),
+    listTokenPermissionGroups: (accountId) => call<PermissionGroup[]>(`${acct(accountId)}/tokens/permission_groups`),
+    async createAccountToken(accountId, input) {
+      const r = await call<{ id: string; value: string }>(`${acct(accountId)}/tokens`, { method: "POST", body: input });
+      return { id: r.id, value: r.value };
+    },
+    async deleteAccountToken(accountId, tokenId) {
+      await call(`${acct(accountId)}/tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
+    },
     async putRepoConnection(accountId, input) {
       const r = await call<{ repo_connection_uuid: string }>(`${acct(accountId)}/builds/repos/connections`, {
         method: "PUT",

@@ -119,9 +119,95 @@ describe("buildsStep", () => {
     expect((err as PauseError).pause.reason).toContain("+ Add account");
   });
 
+  const GROUPS = [
+    { id: "g-settings", name: "Account Settings Read", scopes: ["com.cloudflare.api.account"] },
+    { id: "g-scripts", name: "Workers Scripts Write", scopes: ["com.cloudflare.api.account"] },
+    { id: "g-kv", name: "Workers KV Storage Write", scopes: ["com.cloudflare.api.account"] },
+    { id: "g-r2", name: "Workers R2 Storage Write", scopes: ["com.cloudflare.api.account"] },
+    { id: "g-routes", name: "Workers Routes Write", scopes: ["com.cloudflare.api.account.zone"] },
+    { id: "g-other", name: "DNS Write", scopes: ["com.cloudflare.api.account.zone"] },
+  ];
+
+  it("creates a build token from a new account API token when the user has none", async () => {
+    const createAccountToken = vi.fn(async () => ({ id: "tok-1", value: "token-secret" }));
+    const createBuildToken = vi.fn(async () => ({ build_token_uuid: "bt-new", build_token_name: "Switchyard Workers Builds" }));
+    const { cf, created } = cloudflare({
+      listBuildTokens: async () => [],
+      listTokenPermissionGroups: async () => GROUPS,
+      createAccountToken,
+      createBuildToken,
+    });
+    const { ctx, secrets } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
+    await buildsStep.run(ctx);
+
+    // The permissions the dashboard gives the build token it creates, minus the user-level ones,
+    // which an account token can't hold.
+    expect(createAccountToken).toHaveBeenCalledWith("acc", {
+      name: "Switchyard Workers Builds",
+      policies: [
+        {
+          effect: "allow",
+          permission_groups: [{ id: "g-settings" }, { id: "g-scripts" }, { id: "g-kv" }, { id: "g-r2" }],
+          resources: { "com.cloudflare.api.account.acc": "*" },
+        },
+        {
+          effect: "allow",
+          permission_groups: [{ id: "g-routes" }],
+          resources: { "com.cloudflare.api.account.acc": { "com.cloudflare.api.account.zone.*": "*" } },
+        },
+      ],
+    });
+    expect(secrets).toContain("token-secret");
+    expect(createBuildToken).toHaveBeenCalledWith("acc", {
+      build_token_name: "Switchyard Workers Builds",
+      build_token_secret: "token-secret",
+      cloudflare_token_id: "tok-1",
+    });
+    expect(created.map((t) => t.build_token_uuid)).toEqual(["bt-new", "bt-new"]);
+  });
+
+  it("deletes the API token when Workers Builds won't take it, and pauses with the dashboard steps", async () => {
+    const deleteAccountToken = vi.fn(async () => {});
+    const { cf } = cloudflare({
+      listBuildTokens: async () => [],
+      getUser: async () => ({ id: "u", email: "me@example.com" }),
+      listTokenPermissionGroups: async () => GROUPS,
+      createAccountToken: async () => ({ id: "tok-1", value: "token-secret" }),
+      createBuildToken: async () => {
+        throw new ApiError("cloudflare", 400, "Invalid token");
+      },
+      deleteAccountToken,
+    });
+    const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
+    const err = await buildsStep.run(ctx).catch((e: unknown) => e);
+    expect(deleteAccountToken).toHaveBeenCalledWith("acc", "tok-1");
+    expect(err).toBeInstanceOf(PauseError);
+    expect((err as PauseError).pause.reason).toContain("Invalid token");
+    expect((err as PauseError).pause.reason).toContain("signed in to the dashboard as me@example.com");
+  });
+
+  it("pauses asking to reconnect Cloudflare when Switchyard can't create API tokens", async () => {
+    const { cf } = cloudflare({
+      listBuildTokens: async () => [],
+      getUser: async () => ({ id: "u", email: "me@example.com" }),
+      listTokenPermissionGroups: async () => {
+        throw new ApiError("cloudflare", 403, "Authentication error (10000)");
+      },
+    });
+    const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
+    const err = (await buildsStep.run(ctx).catch((e: unknown) => e)) as PauseError;
+    expect(err.pause.reconnect).toBe("cloudflare");
+    expect(err.pause.reason).toContain("Authentication error");
+    expect(err.pause.reason).toContain("reconnect Cloudflare");
+  });
+
   it("pauses when the connected user has no build token, naming that user", async () => {
     // Build tokens belong to a user, so one made by another member of the account isn't listed.
-    const { cf } = cloudflare({ listBuildTokens: async () => [], getUser: async () => ({ id: "u", email: "me@example.com" }) });
+    const { cf } = cloudflare({
+      listBuildTokens: async () => [],
+      getUser: async () => ({ id: "u", email: "me@example.com" }),
+      listTokenPermissionGroups: async () => GROUPS.filter((g) => g.name !== "Workers Routes Write"),
+    });
     const { ctx } = makeContext({ deps: { cloudflare: cf, github: async () => github }, outputs: { deploy: { workerTag: "t" } } });
     const err = await buildsStep.run(ctx).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PauseError);

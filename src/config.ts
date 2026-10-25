@@ -37,4 +37,7 @@ export const CLOUDFLARE_SCOPES = [
   "zone.read",
   "dns.read",
   "workers-routes.write",
+  // Creates the API token behind a Workers Builds token for a user who has none. The OAuth
+  // client must allow it too, or Cloudflare rejects the whole request with invalid_scope.
+  "account-api-tokens.write",
 ] as const;

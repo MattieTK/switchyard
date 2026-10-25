@@ -87,9 +87,10 @@ describe("convertStep", () => {
     expect(calls.map((c) => c.args)).toEqual([
       ["reset", "--hard", "origin/main"],
       ["clean", "-fdx"],
+      ["ignored-builds"],
       ["ls-files", "--", ".dev.vars"],
     ]);
-    expect(calls[2]?.opts?.cwd).toBe(repoDir);
+    expect(calls[3]?.opts?.cwd).toBe(repoDir);
     const config = await readFile(join(repoDir, "cloudflare.config.ts"), "utf8");
     expect(config).toContain('name: "shop"');
     expect(config).toContain("API_KEY: bindings.secret()");
@@ -184,13 +185,66 @@ describe("convertStep", () => {
     expect(await readFile(join(repoDir, ".nvmrc"), "utf8")).toBe("22\n");
     expect(await readFile(join(repoDir, "apps/web/.node-version"), "utf8")).toBe("24\n");
     expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe(
-      "allowBuilds:\n  workerd: true\n  sharp: set this to true or false\n",
+      "allowBuilds:\n  workerd: true\n  sharp: false\n",
     );
     expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
       "Switchyard changed .nvmrc from v20.19.6 to 22, because Cloudflare's build tools need Node.js 22 or later and Workers Builds uses the version in this file. Check the app still works on Node.js 22.",
       "Switchyard allowed the build scripts of workerd in pnpm-workspace.yaml. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.",
-      "pnpm skipped the build scripts of sharp and marked them for review in pnpm-workspace.yaml. pnpm stops installing until each is set to true or false, so decide before merging.",
+      "Switchyard set the build scripts of sharp to false in pnpm-workspace.yaml, because pnpm already skipped them before the migration, and pnpm stops installing until each is allowed or refused. Change any to true if the app needs it.",
     ]);
+  });
+
+  it("decides on the build scripts pnpm 12 skipped, keeping what happened on Vercel for the project's own", async () => {
+    // pnpm 12 writes no placeholders, and an install with CI set fails with ERR_PNPM_IGNORED_BUILDS.
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const IGNORED = "Automatically ignored builds during installation:\n  unrs-resolver\n  workerd\n  sharp\nhint: …\n";
+    // In each case the production branch's lockfile already had sharp, but not workerd or unrs-resolver.
+    for (const [switchedFrom, lockfile, lock, sharp, sharpWarning] of [
+      [
+        undefined,
+        "pnpm-lock.yaml",
+        "packages:\n\n  sharp@0.34.3:\n    resolution: {}\n",
+        false,
+        "Switchyard set the build scripts of sharp to false in pnpm-workspace.yaml, because pnpm already skipped them before the migration, and pnpm stops installing until each is allowed or refused. Change any to true if the app needs it.",
+      ],
+      [
+        "yarn",
+        "yarn.lock",
+        '# yarn lockfile v1\n\n\nsharp@^0.34.3:\n  version "0.34.3"\n',
+        true,
+        "Switchyard allowed the build scripts of sharp in pnpm-workspace.yaml, because yarn ran them when Vercel installed the project, and pnpm stops installing until each is allowed or refused. Change any to false if the app doesn't need it.",
+      ],
+    ] as const) {
+      const repoDir = await makeTempDir();
+      await writeFile(join(repoDir, "pnpm-workspace.yaml"), "shamefullyHoist: true\n");
+      await writeFile(join(repoDir, "package.json"), "{}");
+      const { run, calls } = fakeRunner((_cmd, args) => {
+        if (args[0] === "ignored-builds") return { code: 0, output: IGNORED };
+        if (args[0] === "--version") return { code: 0, output: "12.15.0\n" };
+        if (args[0] === "show" && args[1] === `origin/main:${lockfile}`) return { code: 0, output: lock };
+        return { code: args[0] === "show" ? 128 : 0, output: "" };
+      });
+      const { ctx } = makeContext({
+        plan: switchedFrom ? { switchedFrom } : {},
+        deps: { run, adapter: () => adapter },
+        outputs: { clone: { dir: repoDir } },
+      });
+      await convertStep.run(ctx);
+      expect(calls.find((c) => c.args[0] === "ignored-builds")).toMatchObject({ cmd: "pnpm", opts: { cwd: repoDir } });
+      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toBe(
+        `shamefullyHoist: true\n\nallowBuilds:\n  "unrs-resolver": true\n  "workerd": true\n  "sharp": ${sharp}\n`,
+      );
+      const warnings = JSON.parse(ctx.outputs.warnings ?? "[]") as string[];
+      expect(warnings).toContain(
+        "Switchyard allowed the build scripts of unrs-resolver, workerd in pnpm-workspace.yaml. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.",
+      );
+      expect(warnings).toContain(sharpWarning);
+    }
   });
 
   it("keeps a Yarn 1 project on Yarn 1 by naming it in package.json before setting Yarn up", async () => {
@@ -333,8 +387,8 @@ describe("convertStep", () => {
           : { code: 0, output: args[0] === "--version" ? "11.27.1\n" : "" },
       );
       await convertStep.run(switching("yarn", repoDir, run));
-      // The project had sharp before, so its build script stays the user's decision.
-      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toContain("sharp: set this to true or false");
+      // The project had sharp before, and Yarn ran its build script on Vercel, so it stays allowed.
+      expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toContain("  sharp: true\n");
     });
   });
 

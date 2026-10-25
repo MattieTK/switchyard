@@ -101,12 +101,6 @@ describe("nextjsAdapter", () => {
     expect(r.warnings).toEqual([]);
   });
 
-  it("warns when pnpm blocked build scripts", async () => {
-    const { run } = fakeRunner(() => ({ code: 0, output: "Run pnpm approve-builds to review" }));
-    const r = await nextjsAdapter.convert({ dir: "/w", pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
-    expect(r.warnings[0]).toContain("pnpm approve-builds");
-  });
-
   it("warns in the plan when the app's Next.js is older than 16", () => {
     const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }, {}) ?? [];
     expect(rest).toEqual([]);

@@ -6,7 +6,9 @@ import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import {
+  allowBuildsIn,
   approveBuilds,
+  ignoredBuildsFrom,
   isYarn1Lockfile,
   MIN_NODE_MAJOR,
   NODE_VERSION_FILES,
@@ -69,15 +71,20 @@ export const cloneStep: Step = {
 // Workers Builds installs and builds with the files in the repository, so a Node.js pin
 // that cf can't run on, or a pnpm build decision left open, fails there too. Monorepos can
 // keep these files at the repository root or in the project folder. installedBefore says
-// whether the production branch's lockfile already had a package.
+// whether the production branch's lockfile already had a package; ignored lists the packages
+// whose build scripts pnpm 12 skipped without writing a placeholder; switchedFrom is the
+// package manager the project used before Switchyard moved it to pnpm.
 async function updateToolchainFiles(
   projectDir: string,
   repoDir: string,
   installedBefore: (name: string) => Promise<boolean>,
+  ignored: readonly string[] = [],
+  switchedFrom?: PackageManager,
 ): Promise<string[]> {
   const warnings: string[] = [];
   const folders = [...new Set([projectDir, repoDir])];
   const read = (path: string) => readFile(path, "utf8").catch(() => null);
+  const builds = buildDecisions(installedBefore, switchedFrom);
   for (const folder of folders) {
     for (const name of NODE_VERSION_FILES) {
       const path = join(folder, name);
@@ -92,27 +99,69 @@ async function updateToolchainFiles(
     const workspacePath = join(folder, "pnpm-workspace.yaml");
     const workspace = await read(workspacePath);
     if (workspace === null) continue;
+    // pnpm 11 marks the packages it wants a decision on with a placeholder.
+    const { added, existing } = await builds.split(undecidedBuilds(workspace));
+    if (!added.length && !existing.length) continue;
+    await writeFile(workspacePath, approveBuilds(approveBuilds(workspace, added), existing, builds.allowExisting));
     const file = relative(repoDir, workspacePath);
-    // Packages the conversion added (vinext's toolchain, such as workerd, and whatever the
-    // Next.js upgrade brings) are part of Switchyard's change, so their build scripts are
-    // allowed. The project's own packages stay the user's decision.
-    const undecided = undecidedBuilds(workspace);
-    const added: string[] = [];
-    const existing: string[] = [];
-    for (const name of undecided) (await installedBefore(name) ? existing : added).push(name);
-    if (added.length) {
-      await writeFile(workspacePath, approveBuilds(workspace, added));
-      warnings.push(
-        `Switchyard allowed the build scripts of ${added.join(", ")} in ${file}. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.`,
-      );
-    }
-    if (existing.length) {
-      warnings.push(
-        `pnpm skipped the build scripts of ${existing.join(", ")} and marked them for review in ${file}. pnpm stops installing until each is set to true or false, so decide before merging.`,
-      );
-    }
+    if (added.length) warnings.push(builds.addedWarning(added, file));
+    if (existing.length) warnings.push(builds.existingWarning(existing, file));
   }
+  if (ignored.length) warnings.push(...(await decideIgnoredBuilds(folders, projectDir, repoDir, builds, ignored)));
   return warnings;
+}
+
+// How Switchyard decides on build scripts pnpm skipped, so Workers Builds' install doesn't stop.
+// Packages the conversion added (vinext's toolchain, such as workerd, and whatever the Next.js
+// upgrade brings) are part of Switchyard's change, so they're allowed. The project's own keep
+// what happened on Vercel: yarn, npm and bun run every build script, so a project moved to pnpm
+// allows them, while pnpm already skipped them for a project that was on pnpm.
+function buildDecisions(installedBefore: (name: string) => Promise<boolean>, switchedFrom?: PackageManager) {
+  return {
+    allowExisting: switchedFrom !== undefined,
+    async split(names: readonly string[]) {
+      const added: string[] = [];
+      const existing: string[] = [];
+      for (const name of names) (await installedBefore(name) ? existing : added).push(name);
+      return { added, existing };
+    },
+    addedWarning: (names: readonly string[], file: string) =>
+      `Switchyard allowed the build scripts of ${names.join(", ")} in ${file}. The conversion added these packages, and pnpm stops installing until each build script is allowed or refused. Change any to false if you'd rather not run it.`,
+    existingWarning: (names: readonly string[], file: string) =>
+      switchedFrom
+        ? `Switchyard allowed the build scripts of ${names.join(", ")} in ${file}, because ${switchedFrom} ran them when Vercel installed the project, and pnpm stops installing until each is allowed or refused. Change any to false if the app doesn't need it.`
+        : `Switchyard set the build scripts of ${names.join(", ")} to false in ${file}, because pnpm already skipped them before the migration, and pnpm stops installing until each is allowed or refused. Change any to true if the app needs it.`,
+  };
+}
+
+// pnpm 12 skips build scripts without writing a placeholder, and Workers Builds' install, run
+// with CI set, then fails with ERR_PNPM_IGNORED_BUILDS. The entries go in the workspace file
+// pnpm reads (the project's, else the repository root's), or a new one in a single-project
+// repository; a new one in a monorepo's subfolder would change the workspace.
+async function decideIgnoredBuilds(
+  folders: readonly string[],
+  projectDir: string,
+  repoDir: string,
+  builds: ReturnType<typeof buildDecisions>,
+  ignored: readonly string[],
+): Promise<string[]> {
+  const undecided = (names: readonly string[], file: string) =>
+    `pnpm skipped the build scripts of ${names.join(", ")}. Workers Builds installs with CI set, where pnpm stops until each is listed under allowBuilds in ${file} as true or false, so decide before merging.`;
+  const folder = folders.find((f) => existsSync(join(f, "pnpm-workspace.yaml"))) ?? (projectDir === repoDir ? projectDir : null);
+  if (!folder) return [undecided(ignored, "the workspace's pnpm-workspace.yaml")];
+  const path = join(folder, "pnpm-workspace.yaml");
+  const file = relative(repoDir, path);
+  const text = await readFile(path, "utf8").catch(() => "");
+  const { added, existing } = await builds.split(ignored);
+  const allowed = allowBuildsIn(text, added);
+  const decided = allowed && allowBuildsIn(allowed.text, existing, builds.allowExisting);
+  // An allowBuilds list written inline can't be extended safely, so the user decides.
+  if (!allowed || !decided) return [undecided(ignored, file)];
+  if (decided.text !== text) await writeFile(path, decided.text);
+  return [
+    ...(allowed.added.length ? [builds.addedWarning(allowed.added, file)] : []),
+    ...(decided.added.length ? [builds.existingWarning(decided.added, file)] : []),
+  ];
 }
 
 // Removes lockfiles of package managers the project doesn't use. vinext and cf choose a
@@ -235,7 +284,13 @@ export const convertStep: Step = {
       ...(yarnWarning ? [yarnWarning] : []),
       ...(lockWarning ? [lockWarning] : []),
       ...result.warnings,
-      ...(await updateToolchainFiles(dir, repoDir, async (name) => (await versionBeforeMigration(ctx, name)) !== null)),
+      ...(await updateToolchainFiles(
+        dir,
+        repoDir,
+        async (name) => (await versionBeforeMigration(ctx, name)) !== null,
+        plan.packageManager === "pnpm" ? await pnpmIgnoredBuilds(ctx, dir) : [],
+        plan.switchedFrom,
+      )),
     ];
     for (const w of warnings) ctx.log(`Warning: ${w}`);
 
@@ -291,6 +346,13 @@ const LOCKFILES: Record<PackageManager, readonly string[]> = {
 };
 
 // The package's version in the production branch's lockfile, from before Switchyard changed anything.
+// The packages whose build scripts pnpm skipped in the converted project. Older pnpm releases
+// without the command, or a failure, count as none.
+async function pnpmIgnoredBuilds(ctx: StepContext, dir: string): Promise<string[]> {
+  const result = await ctx.deps.run("pnpm", ["ignored-builds"], { cwd: dir }).catch(() => null);
+  return result && result.code === 0 ? ignoredBuildsFrom(result.output) : [];
+}
+
 async function versionBeforeMigration(ctx: StepContext, name: string): Promise<string | null> {
   const repo = requireRepo(ctx.job.plan);
   const repoDir = requireOutput(ctx, "clone", "dir");

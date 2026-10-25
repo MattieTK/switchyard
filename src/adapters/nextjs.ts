@@ -494,18 +494,14 @@ export const nextjsAdapter: Adapter = {
       ...NEXT_CACHE_FLAGS[ctx.options.nextCache],
       "--image-optimization=cloudflare-images",
     ]);
-    const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
+    // Build scripts pnpm skipped are allowed or flagged by the convert step, for every adapter.
+    await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
     const stubWarning = await createVinextStub(ctx.dir);
     if (stubWarning) warnings.push(stubWarning);
     await allowMissingExports(ctx.dir);
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
     if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));
-    if (result.output.includes("approve-builds")) {
-      warnings.push(
-        "pnpm blocked some dependency build scripts during install. If the Cloudflare build fails, run `pnpm approve-builds` in the project and commit the result.",
-      );
-    }
     const buildScript = await writeCloudflareBuildScript(ctx, warnings);
     return { baseEntrypoint: "vinext/server/fetch-handler", warnings, ...(buildScript ? { buildScript } : {}) };
   },

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  allowBuildsIn,
   approveBuilds,
+  ignoredBuildsFrom,
   preapproveYarnPackages,
   quarantinedPackages,
   raiseNodeVersion,
@@ -51,6 +53,48 @@ allowBuilds:
   canvas: false
 `);
     expect(approveBuilds(yaml, ["sharp"])).toContain("  'sharp': true\n");
+    expect(approveBuilds(yaml, ["sharp"], false)).toContain("  'sharp': false\n");
+  });
+});
+
+describe("ignoredBuildsFrom", () => {
+  it("reads the packages pnpm ignored-builds lists", () => {
+    const output = `Automatically ignored builds during installation:
+  unrs-resolver
+  @scope/native
+  workerd
+hint: To allow the execution of build scripts for a package, add its name to "allowBuilds" and set to "true", then run "pnpm rebuild".
+hint: allowBuilds:
+hint:   esbuild: true
+`;
+    expect(ignoredBuildsFrom(output)).toEqual(["unrs-resolver", "@scope/native", "workerd"]);
+    expect(ignoredBuildsFrom("Automatically ignored builds during installation:\n  None\n")).toEqual([]);
+    expect(ignoredBuildsFrom("Automatically ignored builds during installation:\n  Cannot identify as no node_modules found\n")).toEqual([]);
+    expect(ignoredBuildsFrom("")).toEqual([]);
+  });
+});
+
+describe("allowBuildsIn", () => {
+  it("adds the setting when the file doesn't have it, quoting each name", () => {
+    expect(allowBuildsIn("shamefullyHoist: true\n", ["workerd", "@scope/native"])).toEqual({
+      text: 'shamefullyHoist: true\n\nallowBuilds:\n  "workerd": true\n  "@scope/native": true\n',
+      added: ["workerd", "@scope/native"],
+    });
+    expect(allowBuildsIn("", ["workerd"])?.text).toBe('allowBuilds:\n  "workerd": true\n');
+    expect(allowBuildsIn("", ["core-js"], false)?.text).toBe('allowBuilds:\n  "core-js": false\n');
+  });
+
+  it("extends an existing list and leaves decided packages alone", () => {
+    const yaml = "allowBuilds:\n  esbuild: true\n  'sharp': false\npackages:\n  - apps/*\n";
+    expect(allowBuildsIn(yaml, ["sharp", "workerd"])).toEqual({
+      text: 'allowBuilds:\n  esbuild: true\n  \'sharp\': false\n  "workerd": true\npackages:\n  - apps/*\n',
+      added: ["workerd"],
+    });
+    expect(allowBuildsIn(yaml, ["esbuild"])).toEqual({ text: yaml, added: [] });
+  });
+
+  it("leaves a list written inline, which it can't extend safely", () => {
+    expect(allowBuildsIn("allowBuilds: { esbuild: true }\n", ["workerd"])).toBeNull();
   });
 });
 

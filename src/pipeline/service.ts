@@ -7,7 +7,7 @@ import type { JobEvents } from "./events.ts";
 import type { JobStore } from "./job-store.ts";
 import { buildPlan as defaultBuildPlan, DEFAULT_PLAN_OPTIONS, type MigrationPlan, type PlanOptions } from "./plan.ts";
 import type { JobQueue } from "./queue.ts";
-import { resetForRetry } from "./runner.ts";
+import { resetForRestart, resetForRetry } from "./runner.ts";
 import type { Job, JobEvent } from "./types.ts";
 
 export interface StartInput {
@@ -26,6 +26,7 @@ export interface JobService {
   list(): Promise<Job[]>;
   get(id: string): Promise<Job | null>;
   retry(id: string): Promise<Job>;
+  restart(id: string): Promise<Job>;
   log(id: string): Promise<string>;
   subscribe(id: string, fn: (e: JobEvent) => void): () => void;
 }
@@ -66,6 +67,18 @@ export function createJobService(d: {
     const id = (await d.credentials.read()).cloudflare?.accountId;
     if (!id) throw new UserInputError("Choose a Cloudflare account on the Connect page first.");
     return id;
+  }
+
+  async function requeue(id: string, reset: (job: Job) => Job, verb: string): Promise<Job> {
+    const job = await d.store.get(id);
+    if (!job) throw new UserInputError("That job doesn't exist.", 404);
+    if (job.status !== "failed" && job.status !== "paused") {
+      throw new UserInputError(`Only failed or paused jobs can be ${verb}.`, 409);
+    }
+    const next = reset(job);
+    await d.store.save(next);
+    d.queue.enqueue(id);
+    return next;
   }
 
   return {
@@ -127,17 +140,8 @@ export function createJobService(d: {
     list: () => d.store.list(),
     get: (id) => d.store.get(id),
 
-    async retry(id) {
-      const job = await d.store.get(id);
-      if (!job) throw new UserInputError("That job doesn't exist.", 404);
-      if (job.status !== "failed" && job.status !== "paused") {
-        throw new UserInputError("Only failed or paused jobs can be retried.", 409);
-      }
-      const reset = resetForRetry(job);
-      await d.store.save(reset);
-      d.queue.enqueue(id);
-      return reset;
-    },
+    retry: (id) => requeue(id, resetForRetry, "retried"),
+    restart: (id) => requeue(id, resetForRestart, "started over"),
 
     log: (id) => d.store.readLog(id),
     subscribe: (id, fn) => d.events.subscribe(id, fn),

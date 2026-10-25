@@ -4,7 +4,7 @@ import { createRedactor } from "../../src/redact.ts";
 import { createJobEvents } from "../../src/pipeline/events.ts";
 import { createJobStore } from "../../src/pipeline/job-store.ts";
 import { createJobQueue } from "../../src/pipeline/queue.ts";
-import { resetForRetry, runJob } from "../../src/pipeline/runner.ts";
+import { resetForRestart, resetForRetry, runJob } from "../../src/pipeline/runner.ts";
 import { PauseError, type JobEvent, type PipelineDeps, type Step, type StepId } from "../../src/pipeline/types.ts";
 import { samplePlan } from "../helpers/sample-plan.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
@@ -132,6 +132,20 @@ describe("resetForRetry", () => {
     expect(r.status).toBe("queued");
     expect(r.steps[0]?.status).toBe("done");
     expect(r.steps[1]).toEqual({ id: "convert", status: "pending", outputs: {} });
+  });
+});
+
+describe("resetForRestart", () => {
+  it("sets every step back to pending, so the job runs again from the clone", async () => {
+    const { job } = await setup();
+    job.steps[0]!.status = "done";
+    job.steps[0]!.outputs = { dir: "/w/j" };
+    job.steps[2]!.status = "failed";
+    job.steps[2]!.error = "x";
+    job.status = "failed";
+    const r = resetForRestart(job);
+    expect(r.status).toBe("queued");
+    expect(r.steps).toEqual(job.steps.map((s) => ({ id: s.id, status: "pending", outputs: {} })));
   });
 });
 

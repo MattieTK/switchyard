@@ -168,4 +168,20 @@ describe("createJobService", () => {
     expect(queue.enqueue).toHaveBeenCalledWith(job.id);
     await expect(service.retry("00000000-0000-4000-8000-00000000ffff")).rejects.toMatchObject({ status: 404 });
   });
+
+  it("starts only failed or paused jobs over, from the first step", async () => {
+    const { service, store, queue } = await setup({ accountId: "acc" });
+    const job = await store.create(plan, "acc", {});
+    await expect(service.restart(job.id)).rejects.toThrow("Only failed or paused");
+    job.status = "failed";
+    job.steps[0]!.status = "done";
+    job.steps[2]!.status = "failed";
+    await store.save(job);
+    const restarted = await service.restart(job.id);
+    expect(restarted.status).toBe("queued");
+    expect(restarted.steps.every((s) => s.status === "pending")).toBe(true);
+    expect((await store.get(job.id))?.steps[0]?.status).toBe("pending");
+    expect(queue.enqueue).toHaveBeenCalledWith(job.id);
+    await expect(service.restart("00000000-0000-4000-8000-00000000ffff")).rejects.toMatchObject({ status: 404 });
+  });
 });

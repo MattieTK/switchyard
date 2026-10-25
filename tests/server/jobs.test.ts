@@ -81,10 +81,12 @@ describe("job routes", () => {
     expect((await req(`/api/jobs/${job.id}`)).status).toBe(404);
   });
 
-  it("retries and returns the log", async () => {
-    const jobs = { retry: vi.fn(async () => job), log: async () => "[clone] ok\n" } as unknown as JobService;
+  it("retries, starts over and returns the log", async () => {
+    const jobs = { retry: vi.fn(async () => job), restart: vi.fn(async () => job), log: async () => "[clone] ok\n" } as unknown as JobService;
     const { req } = await makeApp({ jobs });
     expect((await req(`/api/jobs/${job.id}/retry`, { method: "POST" })).status).toBe(200);
+    expect((await req(`/api/jobs/${job.id}/restart`, { method: "POST" })).status).toBe(200);
+    expect(jobs.restart).toHaveBeenCalledWith(job.id);
     expect(await (await req(`/api/jobs/${job.id}/log`)).text()).toBe("[clone] ok\n");
   });
 

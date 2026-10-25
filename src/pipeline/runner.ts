@@ -107,3 +107,10 @@ export function resetForRetry(job: Job): Job {
     ),
   };
 }
+
+// Runs every step again, so a fix to an earlier step, such as the conversion, reaches the
+// later ones. Clone and convert start from a clean checkout, and the steps after them reuse
+// the Worker, branch, pull request and triggers they find.
+export function resetForRestart(job: Job): Job {
+  return { ...job, status: "queued", steps: job.steps.map((s) => ({ id: s.id, status: "pending", outputs: {} })) };
+}

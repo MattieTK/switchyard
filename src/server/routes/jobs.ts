@@ -60,6 +60,7 @@ export function jobRoutes(d: AppDeps): Hono {
     return job ? c.json(job) : c.json({ error: "That job doesn't exist." }, 404);
   });
   r.post("/jobs/:id/retry", async (c) => c.json(await d.jobs.retry(c.req.param("id"))));
+  r.post("/jobs/:id/restart", async (c) => c.json(await d.jobs.restart(c.req.param("id"))));
   r.get("/jobs/:id/log", async (c) => c.text(await d.jobs.log(c.req.param("id"))));
 
   r.get("/jobs/:id/events", (c) => {

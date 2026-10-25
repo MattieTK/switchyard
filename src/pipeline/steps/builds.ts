@@ -11,6 +11,30 @@ import { requireOutput, requireRepo } from "./shared.ts";
 // can't replace production. Spike 2 records whether cf can upload previews.
 export const PREVIEW_DEPLOY_COMMAND = 'echo "Switchyard: preview branches are built but not deployed"';
 
+// What the API token behind a build token needs: what the dashboard gives the tokens it creates
+// for Builds, plus Workers CI so Switchyard can register it. Builds only accepts user tokens, so
+// the user creates it on their profile page; these keys fill in that form.
+const BUILD_TOKEN_PERMISSIONS = [
+  { key: "account_settings", type: "read" },
+  { key: "workers_scripts", type: "edit" },
+  { key: "workers_ci", type: "edit" },
+  { key: "workers_kv_storage", type: "edit" },
+  { key: "workers_r2", type: "edit" },
+  { key: "workers_routes", type: "edit" },
+  { key: "user_details", type: "read" },
+  { key: "memberships", type: "read" },
+];
+
+// Cloudflare's API token form with the permissions filled in, limited to one account.
+export function buildTokenFormUrl(accountId: string): string {
+  const url = new URL("https://dash.cloudflare.com/profile/api-tokens");
+  url.searchParams.set("permissionGroupKeys", JSON.stringify(BUILD_TOKEN_PERMISSIONS));
+  url.searchParams.set("accountId", accountId);
+  url.searchParams.set("zoneId", "all");
+  url.searchParams.set("name", "Switchyard");
+  return url.toString();
+}
+
 const BUILD_TIMEOUT_MS = 30 * 60_000;
 const POLL_MS = 10_000;
 
@@ -49,20 +73,27 @@ export const buildsStep: Step = {
     const [token] = await cf.listBuildTokens(accountId);
     if (!token) {
       // Build tokens belong to the user who made them, and the API lists only the caller's own,
-      // so a token another member of the account made in the dashboard doesn't count.
+      // so a token another member of the account made doesn't count.
       const email = await cf
         .getUser()
         .then((u) => u.email)
         .catch(() => null);
-      const who = email ? `signed in to the dashboard as ${email}` : "signed in to the dashboard as the Cloudflare user you connected Switchyard with";
+      const who = email ? `signed in as ${email}` : "signed in as the Cloudflare user you connected Switchyard with";
       throw new PauseError({
-        reason: `You have no Workers Builds token on this account yet. Build tokens belong to the user who creates them, so, ${who}, open any Worker other than ${plan.workerName}, go to Settings → Builds and connect a repository once – Cloudflare creates the token then. Then select Check again.`,
-        actionLabel: "Open Workers & Pages",
-        actionUrl: `https://dash.cloudflare.com/${accountId}/workers-and-pages`,
+        reason: `Workers Builds needs an API token of your own to build and deploy on each push. Create one with the button below, ${who} (the permissions are filled in), then paste it here. Cloudflare keeps the token; Switchyard doesn't store it, and later migrations reuse it.`,
+        actionLabel: "Create the token",
+        actionUrl: buildTokenFormUrl(accountId),
+        input: "cloudflare-build-token",
       });
     }
 
     const existing = await cf.listTriggers(accountId, workerTag);
+    // A trigger keeps its build token, even one since deleted, so point old triggers at this one.
+    for (const t of existing) {
+      if (t.build_token_uuid && t.build_token_uuid !== token.build_token_uuid) {
+        await cf.setTriggerBuildToken(accountId, t.trigger_uuid, token.build_token_uuid);
+      }
+    }
     const exec = (line: string) => execString(plan.packageManager, line);
     const script = ctx.output("convert").buildScript;
     const run = script ? runScriptCommand(plan.packageManager, script) : null;

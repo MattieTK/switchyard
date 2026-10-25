@@ -27,6 +27,8 @@ export interface JobService {
   get(id: string): Promise<Job | null>;
   retry(id: string): Promise<Job>;
   restart(id: string): Promise<Job>;
+  // Registers a user API token as the Workers Builds token for a job paused at the builds step.
+  submitBuildToken(id: string, token: string): Promise<Job>;
   log(id: string): Promise<string>;
   subscribe(id: string, fn: (e: JobEvent) => void): () => void;
 }
@@ -143,6 +145,43 @@ export function createJobService(d: {
 
     retry: (id) => requeue(id, resetForRetry, "retried"),
     restart: (id) => requeue(id, resetForRestart, "started over", { clearLog: true }),
+
+    async submitBuildToken(id, rawToken) {
+      const job = await d.store.get(id);
+      if (!job) throw new UserInputError("That job doesn't exist.", 404);
+      const waiting = job.steps.find((s) => s.id === "builds")?.pause?.input === "cloudflare-build-token";
+      if (job.status !== "paused" || !waiting) {
+        throw new UserInputError("This job isn't waiting for a Workers Builds token.", 409);
+      }
+      const token = rawToken.trim();
+      // The token's value goes to Cloudflare only, and isn't saved or logged here.
+      const pasted = d.clients.cloudflareWith(token);
+      try {
+        const info = await pasted.verifyToken();
+        if (info.status !== "active") throw new UserInputError(`That token isn't active (it's ${info.status}).`);
+        // Switchyard lists build tokens as the user it's connected as, and Builds lists only a
+        // user's own, so the token must belong to that same user.
+        const [owner, connected] = await Promise.all([pasted.getUser(), d.clients.cloudflare.getUser()]);
+        if (owner.id !== connected.id) {
+          throw new UserInputError(
+            `That token belongs to ${owner.email}, but Switchyard is connected to Cloudflare as ${connected.email}. Create the token while signed in as ${connected.email}.`,
+          );
+        }
+        // Registered with the token itself, as its owner, which is how Builds accepts it.
+        const registered = (await pasted.listBuildTokens(job.accountId)).some((t) => t.cloudflare_token_id === info.id);
+        if (!registered) {
+          await pasted.createBuildToken(job.accountId, {
+            build_token_name: "Switchyard",
+            build_token_secret: token,
+            cloudflare_token_id: info.id,
+          });
+        }
+      } catch (e) {
+        if (e instanceof UserInputError) throw e;
+        throw new UserInputError(`Cloudflare didn't accept that token: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return requeue(id, resetForRetry, "retried");
+    },
 
     log: (id) => d.store.readLog(id),
     subscribe: (id, fn) => d.events.subscribe(id, fn),

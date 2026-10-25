@@ -1,8 +1,10 @@
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createCredentialStore } from "../../src/auth/store.ts";
+import type { CloudflareClient } from "../../src/clients/cloudflare.ts";
 import type { ClientFactory } from "../../src/clients/factory.ts";
 import { UserInputError } from "../../src/errors.ts";
+import { ApiError } from "../../src/http.ts";
 import { createJobEvents } from "../../src/pipeline/events.ts";
 import { createJobStore } from "../../src/pipeline/job-store.ts";
 import type { MigrationPlan, PlanDeps } from "../../src/pipeline/plan.ts";
@@ -21,7 +23,9 @@ const { plan: env, values } = buildEnvPlan(
 );
 const plan: MigrationPlan = { ...samplePlan, env };
 
-async function setup(opts: { accountId?: string; plan?: MigrationPlan; existingWorkers?: string[] } = {}) {
+async function setup(
+  opts: { accountId?: string; plan?: MigrationPlan; existingWorkers?: string[]; pasted?: Partial<CloudflareClient> } = {},
+) {
   const dir = await makeTempDir();
   const credentials = createCredentialStore(join(dir, "c.json"));
   if (opts.accountId) {
@@ -33,9 +37,15 @@ async function setup(opts: { accountId?: string; plan?: MigrationPlan; existingW
   const getWorkerTag = vi.fn(async (_account: string, name: string) =>
     opts.existingWorkers?.includes(name) ? "tag-1" : null,
   );
-  const clients = { vercel: async () => ({}), github: async () => ({}), cloudflare: { getWorkerTag } } as unknown as ClientFactory;
+  const cloudflareWith = vi.fn((_token: string) => opts.pasted as CloudflareClient);
+  const clients = {
+    vercel: async () => ({}),
+    github: async () => ({}),
+    cloudflare: { getWorkerTag, getUser: async () => ({ id: "u-1", email: "me@example.com" }) },
+    cloudflareWith,
+  } as unknown as ClientFactory;
   const service = createJobService({ store, events: createJobEvents(), queue, clients, credentials, buildPlan });
-  return { service, store, queue, buildPlan, getWorkerTag };
+  return { service, store, queue, buildPlan, getWorkerTag, cloudflareWith };
 }
 
 const input = { projectId: "prj_1", workerName: "shop", nextCache: "kv" as const, values: {}, skip: [] };
@@ -186,5 +196,72 @@ describe("createJobService", () => {
     expect((await store.get(job.id))?.steps[0]?.status).toBe("pending");
     expect(queue.enqueue).toHaveBeenCalledWith(job.id);
     await expect(service.restart("00000000-0000-4000-8000-00000000ffff")).rejects.toMatchObject({ status: 404 });
+  });
+
+  // A job paused at the builds step, waiting for a pasted token.
+  async function waitingForToken(store: Awaited<ReturnType<typeof setup>>["store"]) {
+    const job = await store.create(plan, "acc", {});
+    job.status = "paused";
+    const builds = job.steps.find((s) => s.id === "builds")!;
+    builds.status = "paused";
+    builds.pause = { reason: "Paste a token", input: "cloudflare-build-token" };
+    await store.save(job);
+    return job;
+  }
+
+  it("registers a pasted token as a build token with that token, then checks the job again", async () => {
+    const pasted = {
+      verifyToken: vi.fn(async () => ({ id: "tok-1", status: "active" })),
+      getUser: async () => ({ id: "u-1", email: "me@example.com" }),
+      listBuildTokens: vi.fn(async () => []),
+      createBuildToken: vi.fn(async () => ({ build_token_uuid: "bt-1", build_token_name: "Switchyard" })),
+    };
+    const { service, store, queue, cloudflareWith } = await setup({ accountId: "acc", pasted });
+    const idle = await store.create(plan, "acc", {});
+    await expect(service.submitBuildToken(idle.id, "secret")).rejects.toThrow("isn't waiting for a Workers Builds token");
+
+    const job = await waitingForToken(store);
+    const next = await service.submitBuildToken(job.id, "  secret\n");
+    expect(cloudflareWith).toHaveBeenCalledWith("secret");
+    expect(pasted.createBuildToken).toHaveBeenCalledWith("acc", {
+      build_token_name: "Switchyard",
+      build_token_secret: "secret",
+      cloudflare_token_id: "tok-1",
+    });
+    expect(next.status).toBe("queued");
+    expect(next.steps.find((s) => s.id === "builds")?.status).toBe("pending");
+    expect(queue.enqueue).toHaveBeenCalledWith(job.id);
+  });
+
+  it("refuses an inactive or rejected token and another user's, and reuses an earlier registration", async () => {
+    const base = {
+      verifyToken: async () => ({ id: "tok-1", status: "active" }),
+      getUser: async () => ({ id: "u-1", email: "me@example.com" }),
+      listBuildTokens: async () => [],
+      createBuildToken: vi.fn(async () => ({ build_token_uuid: "bt-1", build_token_name: "Switchyard" })),
+    };
+    for (const [pasted, message] of [
+      [{ ...base, verifyToken: async () => ({ id: "tok-1", status: "disabled" }) }, "isn't active"],
+      [
+        {
+          ...base,
+          verifyToken: async () => {
+            throw new ApiError("cloudflare", 401, "Invalid API Token (1000)", true);
+          },
+        },
+        "Cloudflare didn't accept that token: cloudflare API error 401: Invalid API Token (1000)",
+      ],
+      [{ ...base, getUser: async () => ({ id: "u-2", email: "other@example.com" }) }, "belongs to other@example.com"],
+    ] as const) {
+      const { service, store } = await setup({ accountId: "acc", pasted });
+      const job = await waitingForToken(store);
+      await expect(service.submitBuildToken(job.id, "secret")).rejects.toThrow(message);
+      expect((await store.get(job.id))?.status).toBe("paused");
+    }
+
+    const reuse = { ...base, listBuildTokens: async () => [{ build_token_uuid: "bt-0", build_token_name: "Mine", cloudflare_token_id: "tok-1" }] };
+    const { service, store } = await setup({ accountId: "acc", pasted: reuse });
+    await service.submitBuildToken((await waitingForToken(store)).id, "secret");
+    expect(reuse.createBuildToken).not.toHaveBeenCalled();
   });
 });

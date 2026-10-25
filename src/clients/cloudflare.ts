@@ -26,6 +26,14 @@ export interface CloudflareZone {
 export interface BuildToken {
   build_token_uuid: string;
   build_token_name: string;
+  // The API token the build token wraps.
+  cloudflare_token_id?: string;
+}
+
+export interface BuildTokenInput {
+  build_token_name: string;
+  build_token_secret: string;
+  cloudflare_token_id: string;
 }
 
 export interface RepoConnectionInput {
@@ -54,6 +62,7 @@ export interface TriggerInput {
 export interface BuildTrigger {
   trigger_uuid: string;
   trigger_name: string;
+  build_token_uuid?: string;
 }
 
 export interface BuildInfo {
@@ -69,7 +78,11 @@ export interface CloudflareClient {
   listAccounts(): Promise<CloudflareAccount[]>;
   listZones(accountId: string): Promise<CloudflareZone[]>;
   getWorkerTag(accountId: string, scriptName: string): Promise<string | null>;
+  // Checks the token the client was made with; used for tokens a user pastes.
+  verifyToken(): Promise<{ id: string; status: string }>;
   listBuildTokens(accountId: string): Promise<BuildToken[]>;
+  createBuildToken(accountId: string, input: BuildTokenInput): Promise<BuildToken>;
+  setTriggerBuildToken(accountId: string, triggerUuid: string, buildTokenUuid: string): Promise<void>;
   putRepoConnection(accountId: string, input: RepoConnectionInput): Promise<string>;
   listTriggers(accountId: string, workerTag: string): Promise<BuildTrigger[]>;
   createTrigger(accountId: string, input: TriggerInput): Promise<BuildTrigger>;
@@ -131,7 +144,16 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       const scripts = await call<{ id: string; tag?: string }[]>(`${acct(accountId)}/workers/scripts`);
       return scripts.find((s) => s.id === scriptName)?.tag ?? null;
     },
+    verifyToken: () => call<{ id: string; status: string }>("/user/tokens/verify"),
     listBuildTokens: (accountId) => call<BuildToken[]>(`${acct(accountId)}/builds/tokens`),
+    createBuildToken: (accountId, input) =>
+      call<BuildToken>(`${acct(accountId)}/builds/tokens`, { method: "POST", body: input }),
+    async setTriggerBuildToken(accountId, triggerUuid, buildTokenUuid) {
+      await call(`${acct(accountId)}/builds/triggers/${encodeURIComponent(triggerUuid)}`, {
+        method: "PATCH",
+        body: { build_token_uuid: buildTokenUuid },
+      });
+    },
     async putRepoConnection(accountId, input) {
       const r = await call<{ repo_connection_uuid: string }>(`${acct(accountId)}/builds/repos/connections`, {
         method: "PUT",

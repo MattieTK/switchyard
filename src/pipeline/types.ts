@@ -16,6 +16,8 @@ export interface PauseInfo {
   actionLabel?: string;
   actionUrl?: string;
   reconnect?: Service;
+  // Something the user enters on the job page to continue, such as a Cloudflare API token.
+  input?: "cloudflare-build-token";
 }
 
 export interface StepState {

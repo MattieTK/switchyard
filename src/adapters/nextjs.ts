@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { satisfies, validRange } from "semver";
@@ -16,8 +16,9 @@ import {
   type PackageManager,
   runScriptCommand,
 } from "../translate/package-manager.ts";
-import { incompatibleDependencyWarnings } from "./next-codemod-output.ts";
-import type { Adapter, ConvertContext, NextCachePreset } from "./types.ts";
+import { planFlaggedUpdates, type Release } from "./flagged-packages.ts";
+import { type IncompatibleDependency, incompatibleDependencies, incompatibleDependencyWarning } from "./next-codemod-output.ts";
+import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
 // choice is passed explicitly. "kv" is the closest match to Vercel's ISR data cache.
@@ -143,15 +144,17 @@ function preapprovalPattern(name: string): string {
   return name.startsWith("@") ? `${name.split("/")[0]}/*` : name;
 }
 
-// Runs vinext init. Yarn 4 holds back releases newer than npmMinimalAgeGate, and vinext
-// init installs Cloudflare packages that are often only days old, so the install can fail.
-// The packages Yarn names are added to npmPreapprovedPackages, package.json and yarn.lock
-// go back to how they were, and vinext init runs again.
-async function runVinextInit(
+// Runs a command that installs packages. Yarn 4 holds back releases newer than
+// npmMinimalAgeGate, and the conversion installs packages that are often only days old
+// (Cloudflare's tooling, or the latest release of a flagged package), so the install can
+// fail. The packages Yarn names are added to npmPreapprovedPackages, package.json and
+// yarn.lock go back to how they were, and the command runs again.
+async function runInstall(
   ctx: ConvertContext,
   command: { cmd: string; args: string[] },
   env: Record<string, string>,
   warnings: string[],
+  label: string,
 ): Promise<RunResult> {
   const read = (path: string | null) => (path ? readFile(path, "utf8").catch(() => null) : Promise.resolve(null));
   const manifestPath = join(ctx.dir, "package.json");
@@ -184,7 +187,7 @@ async function runVinextInit(
     if (lockPath && lock !== null) await writeFile(lockPath, lock);
     approved.push(...blocked);
     ctx.log(
-      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running vinext init again.`,
+      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running ${label} again.`,
     );
   }
 }
@@ -230,26 +233,49 @@ async function updateVinextPeers(ctx: ConvertContext, env: Record<string, string
   );
 }
 
-// vinext init sets "type": "module" so its Vite config loads as an ES module. That also
-// makes every other .js file in the project an ES module, and CommonJS scripts it doesn't
-// rename to .cjs (a prebuild tool, a custom server) then fail with "require is not defined".
-// A .mts or .mjs Vite config loads as an ES module whatever the type, so the project keeps its own.
-async function restoreModuleType(dir: string, typeBefore: string | undefined): Promise<void> {
-  if (typeBefore === "module") return;
-  const path = join(dir, "package.json");
-  const text = await readFile(path, "utf8").catch(() => null);
-  const manifest = text === null ? null : (JSON.parse(text) as { type?: string });
-  if (manifest?.type !== "module") return;
-  const config = [
-    ["vite.config.ts", "vite.config.mts"],
-    ["vite.config.js", "vite.config.mjs"],
-  ].find(([from = ""]) => existsSync(join(dir, from)));
-  if (!config) return;
-  const [from = "", to = ""] = config;
-  await rename(join(dir, from), join(dir, to));
-  if (typeBefore === undefined) delete manifest.type;
-  else manifest.type = typeBefore;
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+// The registry's releases of a package after version, or null when they can't be read. npm
+// comes with Node and reads the project's .npmrc, so private registries work too. It prints a
+// list for several releases, an object for one, and only the version string for a release
+// without peers, and fails with "No match found" when there is none.
+async function newerReleases(ctx: ConvertContext, name: string, version: string): Promise<Release[] | null> {
+  const result = await ctx.run("npm", ["view", `${name}@>${version}`, "version", "peerDependencies", "--json"], { cwd: ctx.dir });
+  if (result.code !== 0) return result.stdout.includes("No match found") ? [] : null;
+  const toRelease = (entry: unknown): Release | null => {
+    if (typeof entry === "string") return { version: entry };
+    const r = entry as Partial<Release> | null;
+    return typeof r?.version === "string" ? { version: r.version, peerDependencies: r.peerDependencies ?? {} } : null;
+  };
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown;
+    const releases = (Array.isArray(parsed) ? parsed : [parsed]).map(toRelease);
+    return releases.every((r) => r !== null) ? releases : null;
+  } catch {
+    return null;
+  }
+}
+
+// Updates the packages the upgrade flagged as incompatible to their first release that
+// supports what the upgrade installed. Returns a warning for each package.
+async function updateFlaggedPackages(
+  ctx: ConvertContext,
+  flagged: readonly IncompatibleDependency[],
+  env: Record<string, string>,
+  warnings: string[],
+): Promise<string[]> {
+  if (!flagged.length) return [];
+  const direct = allDependencies(await readPackageJson(ctx.dir));
+  const newer = new Map<string, Release[] | null>();
+  for (const p of flagged) if (p.name in direct) newer.set(p.name, await newerReleases(ctx, p.name, p.version));
+  const plan = planFlaggedUpdates(flagged, direct, newer);
+  if (plan.updates.length) {
+    const add = addCommand(ctx.pm, plan.updates.map((u) => `${u.name}@${u.to}`));
+    await runInstall(ctx, add, env, warnings, "the update").catch((error: unknown) => {
+      throw new Error(
+        `Updating ${plan.updates.map((u) => u.name).join(", ")} failed (${(error as Error).message}). Check the log, or build the plan again without Update flagged packages.`,
+      );
+    });
+  }
+  return plan.warnings;
 }
 
 // Writes the build:cloudflare script when the app's build runs steps before next build.
@@ -277,6 +303,50 @@ const NEXT_CONFIG_FILES = ["next.config.js", "next.config.mjs", "next.config.ts"
 // and assignments such as nextConfig.output = "standalone".
 const STANDALONE_OUTPUT = /\boutput\s*[:=][^,;\n}]*["'`]standalone["'`]/;
 
+const VITE_CONFIG_FILES = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs"];
+const STUB_FILE = "empty-stub.js";
+const STUB_ALIAS = /["']([^"']+)["']\s*:\s*\w+\.resolve\(__dirname,\s*["']empty-stub\.js["']\)/g;
+
+// vinext init points native modules such as sharp at empty-stub.js, which Workers can't
+// load, but doesn't create the file (cloudflare/vinext#4196), so the build fails. Creates
+// it and returns a warning naming the modules, which do nothing on Workers.
+async function createVinextStub(dir: string): Promise<string | null> {
+  for (const name of VITE_CONFIG_FILES) {
+    const config = await readFile(join(dir, name), "utf8").catch(() => null);
+    const modules = config ? [...config.matchAll(STUB_ALIAS)].map((m) => m[1]) : [];
+    if (!modules.length || existsSync(join(dir, STUB_FILE))) continue;
+    await writeFile(
+      join(dir, STUB_FILE),
+      "// Stands in for Node.js-only modules that can't run on Workers. vinext init points them here.\nexport default {};\n",
+    );
+    return `vinext replaces ${modules.join(", ")} with an empty module (${STUB_FILE}), because ${modules.length === 1 ? "it needs" : "they need"} Node.js. Code that calls ${modules.length === 1 ? "it" : "them"} at runtime won't work on Workers.`;
+  }
+  return null;
+}
+
+// cf build sets this for the Cloudflare build only.
+const CLOUDFLARE_BUILD_ENV = "CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT";
+
+// vinext writes standalone output from dist/ after a build, but cf build puts the output in
+// .cloudflare/output, so a Cloudflare build with output: "standalone" fails (a vinext bug).
+// Makes the standalone value apply only outside the Cloudflare build, so next build and
+// Docker images keep it. Returns a warning when next.config changed.
+async function standaloneOutsideCloudflare(dir: string): Promise<string | null> {
+  for (const name of NEXT_CONFIG_FILES) {
+    const path = join(dir, name);
+    const text = await readFile(path, "utf8").catch(() => null);
+    const match = text === null ? null : STANDALONE_OUTPUT.exec(text);
+    if (text === null || !match || match[0].includes(CLOUDFLARE_BUILD_ENV)) continue;
+    const setting = match[0].replace(
+      /(["'`])standalone\1/,
+      (literal) => `(process.env.${CLOUDFLARE_BUILD_ENV} ? undefined : ${literal})`,
+    );
+    await writeFile(path, text.slice(0, match.index) + setting + text.slice(match.index + match[0].length));
+    return `${name} set output: "standalone", which vinext's Cloudflare build can't produce. Switchyard made it apply only outside the Cloudflare build (when ${CLOUDFLARE_BUILD_ENV} isn't set), so next build and Docker images still get standalone output.`;
+  }
+  return null;
+}
+
 // cf picks the framework to build itself, and cloudflare.config.ts can't name it. With one
 // of these dependencies beside Next.js and Vite, it finds more than one framework and stops.
 // Checked against cf 1.0.0-beta.20, which reads them from package.json.
@@ -293,19 +363,62 @@ const CF_DETECTED_FRAMEWORKS: Readonly<Record<string, string>> = {
   "@analogjs/platform": "Analog",
 };
 
+// The upgrade applies only the migrations Next.js 16 requires unless the user opted into more.
+function upgradeFlags(options: AdapterOptions): string[] {
+  return [
+    ...(options.adoptionCodemods ? [] : ["--skip-adoption"]),
+    ...(options.eslintMigration ? [] : ["--skip-eslint-upgrade"]),
+  ];
+}
+
+const OPTIONAL_UPGRADE_STEPS = { adoptionCodemods: "Adoption codemods", eslintMigration: "ESLint migration" } as const;
+
+// Names the opt-ins that ran in a failed upgrade, since leaving them out is the user's next try.
+function upgradeError(command: { cmd: string; args: string[] }, result: RunResult, options: AdapterOptions): Error {
+  const chosen = (Object.keys(OPTIONAL_UPGRADE_STEPS) as (keyof typeof OPTIONAL_UPGRADE_STEPS)[])
+    .filter((o) => options[o])
+    .map((o) => OPTIONAL_UPGRADE_STEPS[o]);
+  if (!chosen.length) return new CommandError(command.cmd, command.args, result);
+  return new Error(
+    `The Next.js upgrade failed with ${chosen.join(" and ")} chosen. Check the log, or build the plan again without ${chosen.length === 1 ? "it" : "them"}.`,
+  );
+}
+
+// Next.js 16 removed next lint, so scripts that run it fail until the ESLint migration runs.
+async function nextLintWarnings(dir: string): Promise<string[]> {
+  const scripts = (await readPackageJsonScripts(dir)) ?? {};
+  const linting = Object.entries(scripts).filter(([, command]) => /\bnext\s+lint\b/.test(command));
+  return linting.length
+    ? [
+        `The ${linting.map(([name]) => name).join(", ")} script${linting.length === 1 ? " runs" : "s run"} next lint, which Next.js 16 removed. Choose ESLint migration under Upgrade options, or change ${linting.length === 1 ? "it" : "them"} to run eslint directly.`,
+      ]
+    : [];
+}
+
+async function readPackageJsonScripts(dir: string): Promise<Record<string, string> | null> {
+  const text = await readFile(join(dir, "package.json"), "utf8").catch(() => null);
+  if (text === null) return null;
+  const scripts = (JSON.parse(text) as { scripts?: unknown }).scripts;
+  return scripts && typeof scripts === "object" ? (scripts as Record<string, string>) : null;
+}
+
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
   label: "Next.js (vinext)",
   support: { level: "supported" },
   reservedBindings: ["ASSETS", "IMAGES", "VINEXT_KV_CACHE"],
   matches: (input) => input.vercelFramework === "nextjs" || "next" in allDependencies(input.packageJson),
+  upgradeFor(packageJson) {
+    const old = needsUpgrade(packageJson);
+    return old ? { from: old.range, to: NEXT_UPGRADE_VERSION } : null;
+  },
   planFiles: NEXT_CONFIG_FILES,
   planWarnings(packageJson, files) {
     const warnings: string[] = [];
     const old = needsUpgrade(packageJson);
     if (old) {
       warnings.push(
-        `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
+        `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Only the required migrations run unless you choose more under Upgrade options. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
       );
     }
     const dependencies = allDependencies(packageJson);
@@ -320,7 +433,7 @@ export const nextjsAdapter: Adapter = {
     const config = NEXT_CONFIG_FILES.map((f) => files[f]).find((text) => text !== undefined);
     if (config && STANDALONE_OUTPUT.test(config)) {
       warnings.push(
-        'next.config sets output: "standalone", which makes vinext look for a Node.js server build that the Cloudflare build doesn\'t produce, so the build will fail. Remove the setting on the migration branch if nothing else, such as a Docker image, depends on it.',
+        'next.config sets output: "standalone", which vinext\'s Cloudflare build can\'t produce. Switchyard will make it apply only outside the Cloudflare build, so next build and Docker images keep standalone output.',
       );
     }
     return warnings;
@@ -330,19 +443,20 @@ export const nextjsAdapter: Adapter = {
     if (ctx.pm === "npm" && (await ensureLegacyPeerDeps(ctx.dir))) warnings.push(LEGACY_PEER_DEPS_WARNING);
     const env = installEnv(ctx.pm);
 
-    const typeBefore = await readFile(join(ctx.dir, "package.json"), "utf8").then(
-      (text) => (JSON.parse(text) as { type?: string }).type,
-      () => undefined,
-    );
     const old = needsUpgrade(await readPackageJson(ctx.dir));
     if (old) {
       if (old.major < 11) await pinNext11(ctx.dir);
       // The upgrade reads the installed Next.js and React versions, so dependencies go in first.
       const install = installCommand(ctx.pm);
       await runOrThrow(ctx.run, install.cmd, install.args, { cwd: ctx.dir, onLine: ctx.log, env });
-      const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, ["upgrade", NEXT_UPGRADE_VERSION, "--yes"]);
+      const upgrade = dlxCommand(ctx.pm, `@next/codemod@${NEXT_UPGRADE_VERSION}`, [
+        "upgrade",
+        NEXT_UPGRADE_VERSION,
+        "--yes",
+        ...upgradeFlags(ctx.options),
+      ]);
       const upgraded = await withYarn1Wrapper(ctx.pm, ctx.run, ctx.dir, (pathPrefix) =>
-        runOrThrow(ctx.run, upgrade.cmd, upgrade.args, {
+        ctx.run(upgrade.cmd, upgrade.args, {
           cwd: ctx.dir,
           onLine: ctx.log,
           // The codemod picks a package manager from the user agent before the lockfile,
@@ -351,10 +465,14 @@ export const nextjsAdapter: Adapter = {
           ...(pathPrefix ? { pathPrefix } : {}),
         }),
       );
+      if (upgraded.code !== 0) throw upgradeError(upgrade, upgraded, ctx.options);
       warnings.push(
         `Switchyard upgraded Next.js from ${old.range} to ${NEXT_UPGRADE_VERSION} with the official Next.js codemods. The codemods don't cover every breaking change, so review the pull request and test the preview before switching traffic.`,
-        ...incompatibleDependencyWarnings(upgraded.output),
       );
+      const flagged = incompatibleDependencies(upgraded.output);
+      if (ctx.options.updateFlaggedPackages) warnings.push(...(await updateFlaggedPackages(ctx, flagged, env, warnings)));
+      else warnings.push(...flagged.map(incompatibleDependencyWarning));
+      if (!ctx.options.eslintMigration) warnings.push(...(await nextLintWarnings(ctx.dir)));
     }
     const { cmd, args } = dlxCommand(ctx.pm, `vinext@${VINEXT_VERSION}`, [
       "init",
@@ -362,8 +480,11 @@ export const nextjsAdapter: Adapter = {
       ...NEXT_CACHE_FLAGS[ctx.options.nextCache],
       "--image-optimization=cloudflare-images",
     ]);
-    const result = await runVinextInit(ctx, { cmd, args }, env, warnings);
-    await restoreModuleType(ctx.dir, typeBefore);
+    const result = await runInstall(ctx, { cmd, args }, env, warnings, "vinext init");
+    const stubWarning = await createVinextStub(ctx.dir);
+    if (stubWarning) warnings.push(stubWarning);
+    const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
+    if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));
     if (result.output.includes("approve-builds")) {
       warnings.push(

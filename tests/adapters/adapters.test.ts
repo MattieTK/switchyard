@@ -73,7 +73,7 @@ describe("nextjsAdapter", () => {
     const { run, calls } = fakeRunner();
     const r = await nextjsAdapter.convert({ dir, pm: "npm", run, log: () => {}, options: { nextCache: "kv" } });
     expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe("legacy-peer-deps=true\n");
-    expect(calls[0]?.opts).toMatchObject({ cwd: dir, env: { npm_config_legacy_peer_deps: "true" } });
+    expect(calls[0]?.opts).toMatchObject({ cwd: dir, env: { npm_config_legacy_peer_deps: "true", npm_config_engine_strict: "false" } });
     expect(r.warnings).toEqual([LEGACY_PEERS_WARNING]);
   });
 
@@ -111,11 +111,13 @@ describe("nextjsAdapter", () => {
     const [warning, ...rest] = nextjsAdapter.planWarnings?.({ dependencies: { next: "10.0.2" } }, {}) ?? [];
     expect(rest).toEqual([]);
     expect(warning).toBe(
-      "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
+      "This app uses Next.js 10. Switchyard will upgrade it to Next.js 16.4.1 with the official Next.js codemods before converting, because vinext needs Next.js 16. Only the required migrations run unless you choose more under Upgrade options. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.",
     );
     expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "^16.1.0" } }, {})).toEqual([]);
     expect(nextjsAdapter.planWarnings?.({ dependencies: { next: "canary" } }, {})).toEqual([]);
     expect(nextjsAdapter.planWarnings?.(null, {})).toEqual([]);
+    expect(nextjsAdapter.upgradeFor?.({ dependencies: { next: "^13.4.0" } })).toEqual({ from: "^13.4.0", to: "16.4.1" });
+    expect(nextjsAdapter.upgradeFor?.({ dependencies: { next: "16.2.0" } })).toBeNull();
   });
 
   it("warns in the plan about Hono and standalone output, which the Cloudflare build can't handle yet", () => {
@@ -221,6 +223,140 @@ old-lib 1.0.0
       ["npx", "--yes", "true"],
       ["npx", "--yes", "true"],
     ]);
+  });
+
+  describe("upgrade options", () => {
+    const upgradeArgs = (calls: { args: string[] }[]) => calls.find((c) => c.args[1]?.startsWith("@next/codemod"))?.args.slice(2);
+
+    it("runs only the required migrations unless the user chose more", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      const { run, calls } = fakeRunner();
+      await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+      expect(upgradeArgs(calls)).toEqual(["upgrade", "16.4.1", "--yes", "--skip-adoption", "--skip-eslint-upgrade"]);
+    });
+
+    it("drops the skip flag for each chosen option", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      for (const [options, expected] of [
+        [{ adoptionCodemods: true }, ["--skip-eslint-upgrade"]],
+        [{ eslintMigration: true }, ["--skip-adoption"]],
+        [{ adoptionCodemods: true, eslintMigration: true }, []],
+      ] as const) {
+        const { run, calls } = fakeRunner();
+        await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", ...options } });
+        expect(upgradeArgs(calls)).toEqual(["upgrade", "16.4.1", "--yes", ...expected]);
+      }
+    });
+
+    it("names the chosen options when the upgrade fails", async () => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "15.1.0" } }));
+      const failing = () =>
+        fakeRunner((_cmd, args) => ({ code: args[1]?.startsWith("@next/codemod") ? 1 : 0, output: "Failed to run eslint migrate-config" })).run;
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run: failing(), log: () => {}, options: { nextCache: "kv", eslintMigration: true } }),
+      ).rejects.toThrow("The Next.js upgrade failed with ESLint migration chosen. Check the log, or build the plan again without it.");
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run: failing(), log: () => {}, options: { nextCache: "kv" } }),
+      ).rejects.toThrow("exited with code 1");
+    });
+
+    it("updates flagged packages to a latest release that supports the new React, when chosen", async () => {
+      const report = `⚠ Found 3 dependencies that seem incompatible with the upgraded package versions.
+You may have to update these packages to their latest version or file an issue to ask for support of the upgraded libraries.
+framer-motion 7.3.5
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+recharts 2.1.14
+  └── ✕ unmet peer react@"^16.0.0 || ^17.0.0 || ^18.0.0": found 19.3.1
+ai 2.2.1
+  └── ✕ unmet peer react@"^18.2.0": found 19.3.1
+`;
+      const registry: Record<string, { code: number; output: string }> = {
+        "framer-motion@>7.3.5": {
+          code: 0,
+          output: '[{"version":"10.18.0","peerDependencies":{"react":"^18.0.0"}},{"version":"11.13.5","peerDependencies":{"react":"^18.0.0 || ^19.0.0"}},"12.0.0"]',
+        },
+        "recharts@>2.1.14": { code: 0, output: '{"version":"2.15.0","peerDependencies":{"react":"^16.0.0 || ^17.0.0 || ^18.0.0"}}' },
+        "ai@>2.2.1": { code: 1, output: "npm error 403 Forbidden" },
+      };
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5", recharts: "^2.1.14", ai: "2.2.1" } }),
+      );
+      const options = { nextCache: "kv" as const, updateFlaggedPackages: true };
+      const { run, calls } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return registry[args[1] ?? ""] ?? { code: 1, output: "" };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options });
+      expect(calls.find((c) => c.args[0] === "add")?.args).toEqual(["add", "framer-motion@^11.13.5"]);
+      expect(r.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Switchyard updated framer-motion from 7.3.5 to ^11.13.5, the first release"),
+          expect.stringContaining("No newer release declares support for react 19.3.1 either"),
+          expect.stringContaining("couldn't look up its releases"),
+        ]),
+      );
+
+      // Without the option, the report only becomes warnings and nothing is looked up.
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5" } }));
+      const plain = fakeRunner((_cmd, args) => ({ code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" }));
+      const p = await nextjsAdapter.convert({ dir, pm: "pnpm", run: plain.run, log: () => {}, options: { nextCache: "kv" } });
+      expect(plain.calls.some((c) => c.cmd === "npm")).toBe(false);
+      expect(p.warnings).toContain(
+        "framer-motion 7.3.5 supports react ^18.0.0, but the upgrade installed react 19.3.1. If the build or the app fails, update or replace it.",
+      );
+    });
+
+    it("counts no newer release as nothing to update to", async () => {
+      const report = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
+advice
+old-lib 1.0.0
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+`;
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "old-lib": "1.0.0" } }));
+      const { run } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return { code: 1, output: '{"error":{"summary":"No match found for version >1.0.0"}}' };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", updateFlaggedPackages: true } });
+      expect(r.warnings).toContainEqual(expect.stringContaining("No newer release declares support"));
+    });
+
+    it("names the option when installing the updates fails", async () => {
+      const report = `⚠ Found 1 dependency that seem incompatible with the upgraded package versions.
+advice
+framer-motion 7.3.5
+  └── ✕ unmet peer react@"^18.0.0": found 19.3.1
+`;
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "13.4.0", "framer-motion": "^7.3.5" } }));
+      const { run } = fakeRunner((cmd, args) => {
+        if (cmd === "npm" && args[0] === "view") return { code: 0, output: '"12.4.0"' };
+        if (cmd === "npm") return { code: 0, output: "" };
+        if (args[0] === "add") return { code: 1, output: "ERR_PNPM_FETCH_404" };
+        return { code: 0, output: args[1]?.startsWith("@next/codemod") ? report : "" };
+      });
+      await expect(
+        nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv", updateFlaggedPackages: true } }),
+      ).rejects.toThrow("Updating framer-motion failed (pnpm add framer-motion@^12.4.0 exited with code 1). Check the log, or build the plan again without Update flagged packages.");
+    });
+
+    it("warns about scripts that still run next lint when the ESLint migration didn't run", async () => {
+      const pkg = { dependencies: { next: "15.1.0" }, scripts: { lint: "next lint", "lint:fix": "next lint --fix", test: "vitest" } };
+      await writeFile(join(dir, "package.json"), JSON.stringify(pkg));
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(r.warnings).toContain(
+        "The lint, lint:fix scripts run next lint, which Next.js 16 removed. Choose ESLint migration under Upgrade options, or change them to run eslint directly.",
+      );
+      await writeFile(join(dir, "package.json"), JSON.stringify(pkg));
+      const migrated = await nextjsAdapter.convert({
+        dir,
+        pm: "pnpm",
+        run: fakeRunner().run,
+        log: () => {},
+        options: { nextCache: "kv", eslintMigration: true },
+      });
+      expect(migrated.warnings.join("\n")).not.toContain("next lint");
+    });
   });
 
   it("doesn't upgrade an app already on Next.js 16", async () => {
@@ -384,41 +520,50 @@ old-lib 1.0.0
     });
   });
 
-  describe("module type", () => {
-    // Does what vinext init does to package.json and the Vite config.
-    const initLikeVinext = (config = "vite.config.ts") =>
-      fakeRunner(async (_cmd, args) => {
-        if (args.includes("init")) {
-          const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-          await writeFile(join(dir, "package.json"), JSON.stringify({ ...manifest, type: "module" }));
-          await writeFile(join(dir, config), "export default {};\n");
-        }
-        return { code: 0, output: "" };
-      });
-    const manifest = async () => JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-
-    it("keeps the project's module type and makes the Vite config an ES module file", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { next: "16.2.0" } }));
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run: initLikeVinext().run, log: () => {}, options: { nextCache: "kv" } });
-      expect(await manifest()).not.toHaveProperty("type");
-      expect(await readFile(join(dir, "vite.config.mts"), "utf8")).toBe("export default {};\n");
-      await expect(readFile(join(dir, "vite.config.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+  it("creates the empty-stub.js vinext points native modules at, which vinext init leaves out", async () => {
+    const config = `import path from "node:path";
+export default defineConfig({
+  resolve: {
+    alias: {
+      "sharp": path.resolve(__dirname, "empty-stub.js"),
+      "satori": path.resolve(__dirname, "empty-stub.js"),
+    },
+  },
+});
+`;
+    const { run } = fakeRunner(async (_cmd, args) => {
+      if (args.includes("init")) await writeFile(join(dir, "vite.config.ts"), config);
+      return { code: 0, output: "" };
     });
+    const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
+    expect(await readFile(join(dir, "empty-stub.js"), "utf8")).toContain("export default {};");
+    expect(r.warnings).toContain(
+      "vinext replaces sharp, satori with an empty module (empty-stub.js), because they need Node.js. Code that calls them at runtime won't work on Workers.",
+    );
+  });
 
-    it("puts back an explicit commonjs type and renames a .js Vite config to .mjs", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ type: "commonjs", dependencies: { next: "16.2.0" } }));
-      const { run } = initLikeVinext("vite.config.js");
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
-      expect((await manifest()).type).toBe("commonjs");
-      expect(await readFile(join(dir, "vite.config.mjs"), "utf8")).toBe("export default {};\n");
-    });
-
-    it("leaves an app that was already an ES module as it is", async () => {
-      await writeFile(join(dir, "package.json"), JSON.stringify({ type: "module", dependencies: { next: "16.2.0" } }));
-      await nextjsAdapter.convert({ dir, pm: "pnpm", run: initLikeVinext().run, log: () => {}, options: { nextCache: "kv" } });
-      expect((await manifest()).type).toBe("module");
-      expect(await readFile(join(dir, "vite.config.ts"), "utf8")).toBe("export default {};\n");
-    });
+  it("makes output: standalone apply only outside the Cloudflare build", async () => {
+    for (const [file, before, after] of [
+      ["next.config.mjs", 'export default { output: "standalone" };\n', 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n'],
+      [
+        "next.config.js",
+        "module.exports = { output: process.env.E2E === 'true' ? undefined : 'standalone', images: {} };\n",
+        "module.exports = { output: process.env.E2E === 'true' ? undefined : (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : 'standalone'), images: {} };\n",
+      ],
+    ] as const) {
+      await rm(join(dir, "next.config.mjs"), { force: true });
+      await writeFile(join(dir, file), before);
+      const r = await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(dir, file), "utf8")).toBe(after);
+      expect(r.warnings).toContainEqual(expect.stringContaining(`${file} set output: "standalone"`));
+      await rm(join(dir, file));
+    }
+    // Other outputs, and a config Switchyard already changed, stay as they are.
+    for (const config of ["export default { output: 'export' };\n", 'export default { output: (process.env.CLOUDFLARE_VITE_FORCE_BUILD_OUTPUT ? undefined : "standalone") };\n']) {
+      await writeFile(join(dir, "next.config.mjs"), config);
+      await nextjsAdapter.convert({ dir, pm: "pnpm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+      expect(await readFile(join(dir, "next.config.mjs"), "utf8")).toBe(config);
+    }
   });
 
   it("fails when vinext init fails", async () => {

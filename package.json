@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "vite build --logLevel warn && node src/server/main.ts",
-    "dev": "node --watch src/server/main.ts",
+    "dev": "node --watch-path=./src src/server/main.ts",
     "build:web": "vite build",
     "dev:web": "vite build --watch",
     "test": "vitest run",

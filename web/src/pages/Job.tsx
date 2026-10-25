@@ -1,10 +1,9 @@
-import { Collapsible } from "@base-ui/react/collapsible";
 import { Progress } from "@base-ui/react/progress";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner } from "../ui/controls.tsx";
-import { ChevronIcon, CopyIcon, ExternalIcon } from "../ui/icons.tsx";
+import { CopyIcon, ExternalIcon } from "../ui/icons.tsx";
 import { StepChain } from "../ui/StepChain.tsx";
 
 const MAX_LINES = 2000;
@@ -175,7 +174,7 @@ export function JobPage({ jobId }: { jobId: string }) {
   const canRetry = job.status === "failed" || job.status === "paused";
 
   return (
-    <main>
+    <main className="main-wide">
       <div className="page-head">
         <div className="page-head-row">
           <div>
@@ -216,50 +215,45 @@ export function JobPage({ jobId }: { jobId: string }) {
 
       {error && <Callout tone="error">{error}</Callout>}
 
-      <div className="stack">
-        <Card>
-          <StepChain
-            steps={job.steps.map((s) => ({
-              id: s.id,
-              title: STEP_TITLES[s.id],
-              status: s.status,
-              details: <StepDetails step={s} />,
-            }))}
-          />
-        </Card>
-
-        {workingCopy && (
+      {/* Steps on the left and the log beside them on wide screens, stacked on narrow ones. */}
+      <div className="job-layout">
+        <div className="stack">
           <Card>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="small muted">Working copy</div>
-                <code style={{ wordBreak: "break-all" }}>{workingCopy}</code>
-              </div>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  void navigator.clipboard.writeText(workingCopy).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1500);
-                  });
-                }}
-              >
-                <CopyIcon /> {copied ? "Copied" : "Copy path"}
-              </Button>
-            </div>
+            <StepChain
+              steps={job.steps.map((s) => ({
+                id: s.id,
+                title: STEP_TITLES[s.id],
+                status: s.status,
+                details: <StepDetails step={s} />,
+              }))}
+            />
           </Card>
-        )}
 
-        <Card>
-          <Collapsible.Root defaultOpen>
-            <Collapsible.Trigger className="collapsible-trigger">
-              Log <span className="muted small">({lines.length} lines)</span>
-              <ChevronIcon />
-            </Collapsible.Trigger>
-            <Collapsible.Panel className="collapsible-panel">
-              <Log lines={lines} />
-            </Collapsible.Panel>
-          </Collapsible.Root>
+          {workingCopy && (
+            <Card>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="small muted">Working copy</div>
+                  <code style={{ wordBreak: "break-all" }}>{workingCopy}</code>
+                </div>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(workingCopy).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1500);
+                    });
+                  }}
+                >
+                  <CopyIcon /> {copied ? "Copied" : "Copy path"}
+                </Button>
+              </div>
+            </Card>
+          )}
+        </div>
+
+        <Card className="log-card" title="Log" aside={<span className="muted small">{lines.length} lines</span>}>
+          <Log lines={lines} />
         </Card>
       </div>
     </main>

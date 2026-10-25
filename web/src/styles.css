@@ -81,6 +81,7 @@ li + li { margin-top: 0.3rem; }
 .nav a[aria-current="page"] { color: var(--fg); background: var(--surface-2); font-weight: 550; }
 .topbar-route { margin-left: auto; display: inline-flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.85rem; }
 main { max-width: 56rem; margin: 0 auto; padding: 2.25rem 1.5rem 5rem; }
+main.main-wide { max-width: 80rem; }
 .page-head { margin-bottom: 1.5rem; }
 .page-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .lede { color: var(--muted); margin: 0; max-width: 42rem; }
@@ -257,6 +258,19 @@ main { max-width: 56rem; margin: 0 auto; padding: 2.25rem 1.5rem 5rem; }
 .log { margin: 0.85rem 0 0; padding: 0.9rem 1rem; max-height: 28rem; overflow: auto; font-family: var(--mono); font-size: 0.8rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--log-fg); background: var(--log-bg); border-radius: 8px; }
 .log-step { color: #71717a; }
 .log-warning { color: #fbbf24; }
+
+/* Job page: the log sits beside the steps on wide screens and follows the page while it scrolls.
+   The card is the viewport height less 4.25rem above (the 3.25rem topbar plus a gap) and
+   1.25rem below. The page's bottom padding matches that 1.25rem, so when the log is taller
+   than the steps, scrolling to the end stops with the card exactly at its sticky position. */
+.job-layout { display: grid; gap: 1rem; }
+.log-card .log { margin: 0; }
+@media (min-width: 960px) {
+  main.main-wide { padding-bottom: 1.25rem; }
+  .job-layout { grid-template-columns: 22rem minmax(0, 1fr); align-items: start; }
+  .log-card { position: sticky; top: 4.25rem; display: flex; flex-direction: column; height: calc(100dvh - 5.5rem); min-height: 20rem; }
+  .log-card .log { flex: 1; min-height: 0; max-height: none; }
+}
 
 /* Tables */
 .table-wrap { overflow-x: auto; margin: 0 -1.25rem; }

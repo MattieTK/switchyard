@@ -24,6 +24,8 @@ export interface JsonRequest {
   query?: Record<string, string | number | undefined>;
   body?: unknown;
   allow404?: boolean;
+  // "bytes" returns the response body as a Uint8Array, for binary responses such as images.
+  as?: "json" | "bytes";
 }
 
 export interface JsonClient {
@@ -61,7 +63,7 @@ export function createJsonClient(o: JsonClientOptions): JsonClient {
           method: req.method ?? "GET",
           headers: {
             Authorization: `Bearer ${await o.token()}`,
-            Accept: "application/json",
+            Accept: req.as === "bytes" ? "*/*" : "application/json",
             ...(hasBody ? { "Content-Type": "application/json" } : {}),
             ...o.headers,
           },
@@ -69,6 +71,7 @@ export function createJsonClient(o: JsonClientOptions): JsonClient {
         });
 
         if (res.ok) {
+          if (req.as === "bytes") return new Uint8Array(await res.arrayBuffer()) as T;
           if (res.status === 204) return undefined as T;
           const text = await res.text();
           try {

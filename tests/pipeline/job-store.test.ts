@@ -64,6 +64,17 @@ describe("createJobStore", () => {
     expect(await store.readLog(job.id)).toBe("one\ntwo\nthree\n");
   });
 
+  it("keeps one screenshot per job, and removes it when given none", async () => {
+    const store = createJobStore(await makeTempDir());
+    const job = await store.create(samplePlan, "acc", {});
+    expect(await store.readScreenshot(job.id)).toBeNull();
+    await store.writeScreenshot(job.id, new Uint8Array([1, 2, 3]));
+    expect([...((await store.readScreenshot(job.id)) ?? [])]).toEqual([1, 2, 3]);
+    await store.writeScreenshot(job.id, null);
+    expect(await store.readScreenshot(job.id)).toBeNull();
+    expect(await store.readScreenshot("../../etc/passwd")).toBeNull();
+  });
+
   it("clears the log after the appends already issued, and keeps later ones", async () => {
     const store = createJobStore(await makeTempDir());
     const job = await store.create(samplePlan, "acc", {});

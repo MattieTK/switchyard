@@ -135,6 +135,41 @@ function StepDetails({
   );
 }
 
+// The deployed site once the first deploy has run: links to it and to its Worker in the dashboard,
+// and a screenshot when one was taken. A screenshot that doesn't load is left out.
+function SiteCard({ jobId, job }: { jobId: string; job: Job }) {
+  const outputs = job.steps.find((s) => s.id === "deploy")?.outputs ?? {};
+  const [failed, setFailed] = useState<string | null>(null);
+  const url = outputs.workersDevUrl;
+  if (!url) return null;
+  const host = url.replace(/^https?:\/\//, "");
+  const worker = `https://dash.cloudflare.com/${job.accountId}/workers/services/view/${encodeURIComponent(job.plan.workerName)}/production`;
+  const taken = outputs.screenshot;
+  const shot = taken && failed !== taken ? authUrl(`/api/jobs/${jobId}/screenshot?v=${taken}`) : null;
+  return (
+    <Card title="Your site" className="site-card">
+      <div className={shot ? "site-body" : undefined}>
+        {shot && (
+          <a className="site-shot" href={url} target="_blank" rel="noreferrer">
+            <img src={shot} alt={`The home page of ${host}`} onError={() => setFailed(taken ?? null)} />
+          </a>
+        )}
+        <div>
+          <div className="row">
+            <ButtonLink variant="primary" href={url} target="_blank" rel="noreferrer">
+              Open site <ExternalIcon />
+            </ButtonLink>
+            <ButtonLink href={worker} target="_blank" rel="noreferrer">
+              View the Worker <ExternalIcon />
+            </ButtonLink>
+          </div>
+          <p className="small muted site-host">{host}</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // Starting a finished migration over deploys the Worker and pushes the branch again, so it asks
 // first. A job that stopped starts over straight away.
 function StartOverButton({ job, busy, onConfirm }: { job: Job; busy: boolean; onConfirm: () => void }) {
@@ -403,6 +438,8 @@ export function JobPage({ jobId }: { jobId: string }) {
           )}
         </div>
 
+        <div className="job-side">
+        <SiteCard jobId={jobId} job={job} />
         <Card
           className="log-card"
           title={
@@ -427,6 +464,7 @@ export function JobPage({ jobId }: { jobId: string }) {
         >
           <Log lines={lines} />
         </Card>
+        </div>
       </div>
     </main>
   );

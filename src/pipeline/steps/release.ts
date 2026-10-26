@@ -7,7 +7,7 @@ import { runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
-import type { Step } from "../types.ts";
+import type { Step, StepContext } from "../types.ts";
 import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
 
 const WORKERS_DEV = /https:\/\/[a-z0-9.-]+\.workers\.dev/i;
@@ -47,8 +47,32 @@ export const deployStep: Step = {
     const tag = await ctx.deps.cloudflare.getWorkerTag(accountId, plan.workerName);
     if (!tag) throw new Error(`The Worker ${plan.workerName} wasn't found on the account after deploying.`);
     ctx.outputs.workerTag = tag;
+    if (ctx.outputs.workersDevUrl) await saveScreenshot(ctx, ctx.outputs.workersDevUrl);
   },
 };
+
+// Saves a picture of the deployed site for the job page. It's a nice-to-have: without the
+// browser-rendering.write scope, over Browser Run's free limits, or when the site doesn't load,
+// the page simply shows no screenshot. A new workers.dev address can take a moment to answer,
+// so it tries once more after a pause longer than the free plan's ten seconds between requests.
+async function saveScreenshot(ctx: StepContext, url: string): Promise<void> {
+  const { id, accountId } = ctx.job;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const image = await ctx.deps.cloudflare.screenshot(accountId, url);
+      await ctx.deps.saveScreenshot(id, image);
+      ctx.outputs.screenshot = String(ctx.deps.now());
+      return;
+    } catch (e) {
+      if (attempt === 1) {
+        await ctx.deps.sleep(15_000);
+        continue;
+      }
+      ctx.log(`No screenshot of the site: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  await ctx.deps.saveScreenshot(id, null).catch(() => {});
+}
 
 export const pushStep: Step = {
   id: "push",

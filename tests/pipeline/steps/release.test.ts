@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudflareClient } from "../../../src/clients/cloudflare.ts";
 import type { GitHubClient } from "../../../src/clients/github.ts";
+import { ApiError } from "../../../src/http.ts";
 import { deployStep, prStep, pushStep } from "../../../src/pipeline/steps/release.ts";
 import { buildEnvPlan } from "../../../src/translate/env-plan.ts";
 import { fakeRunner } from "../../helpers/fake-runner.ts";
@@ -44,6 +45,42 @@ describe("deployStep", () => {
     expect(secrets).toContain("cf-token");
     expect(ctx.outputs).toEqual({ workersDevUrl: "https://shop.acme.workers.dev", workerTag: "tag-1" });
     expect(cloudflare.getWorkerTag).toHaveBeenCalledWith("acc", "shop");
+  });
+
+  it("saves a screenshot of the deployed site", async () => {
+    const image = new Uint8Array([1, 2, 3]);
+    const screenshot = vi.fn(async () => image);
+    const saveScreenshot = vi.fn(async () => {});
+    const { run } = fakeRunner(() => ({ code: 0, output: "  https://shop.acme.workers.dev\n" }));
+    const cloudflare = { getWorkerTag: async () => "tag-1", screenshot } as unknown as CloudflareClient;
+    const { ctx, job } = makeContext({
+      deps: { run, workDir: await makeTempDir(), cloudflare, saveScreenshot, now: () => 1234 },
+      outputs: { convert: { projectDir: "/w/app" } },
+    });
+    await deployStep.run(ctx);
+    expect(screenshot).toHaveBeenCalledWith("acc", "https://shop.acme.workers.dev");
+    expect(saveScreenshot).toHaveBeenCalledWith(job.id, image);
+    expect(ctx.outputs.screenshot).toBe("1234");
+  });
+
+  it("goes on without a screenshot when Browser Run refuses, after one more try", async () => {
+    // Without the browser-rendering.write scope, or over the free plan's limits, Cloudflare refuses.
+    const screenshot = vi.fn(async () => {
+      throw new ApiError("cloudflare", 403, "Authentication error (10000)");
+    });
+    const saveScreenshot = vi.fn(async () => {});
+    const sleeps: number[] = [];
+    const { run } = fakeRunner(() => ({ code: 0, output: "  https://shop.acme.workers.dev\n" }));
+    const cloudflare = { getWorkerTag: async () => "tag-1", screenshot } as unknown as CloudflareClient;
+    const { ctx, job } = makeContext({
+      deps: { run, workDir: await makeTempDir(), cloudflare, saveScreenshot, sleep: async (ms) => void sleeps.push(ms) },
+      outputs: { convert: { projectDir: "/w/app" } },
+    });
+    await deployStep.run(ctx);
+    expect(screenshot).toHaveBeenCalledTimes(2);
+    expect(sleeps).toEqual([15_000]);
+    expect(saveScreenshot).toHaveBeenCalledWith(job.id, null);
+    expect(ctx.outputs).toEqual({ workersDevUrl: "https://shop.acme.workers.dev", workerTag: "tag-1" });
   });
 
   it("passes the production build variables to the deploy, with CI and the Cloudflare credentials still winning", async () => {

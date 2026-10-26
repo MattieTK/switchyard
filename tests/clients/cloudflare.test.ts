@@ -112,6 +112,17 @@ describe("createCloudflareClient", () => {
     expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ build_token_uuid: "bt-9" });
   });
 
+  it("takes a JPEG screenshot of a page with Browser Run", async () => {
+    const { c, calls } = client([new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } })]);
+    expect([...(await c.screenshot("acc", "https://app.example.workers.dev"))]).toEqual([1, 2, 3]);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.url).toBe(`${BASE}/accounts/acc/browser-run/screenshot`);
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
+      url: "https://app.example.workers.dev",
+      screenshotOptions: { type: "jpeg" },
+    });
+  });
+
   it("joins Cloudflare error messages into the ApiError", async () => {
     const { c } = client([json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403)]);
     await expect(c.listBuildTokens("acc")).rejects.toThrow("Authentication error (10000)");

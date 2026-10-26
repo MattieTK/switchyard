@@ -69,6 +69,11 @@ export function jobRoutes(d: AppDeps): Hono {
     return c.json(await d.jobs.submitBuildToken(c.req.param("id"), token));
   });
   r.get("/jobs/:id/log", async (c) => c.text(await d.jobs.log(c.req.param("id"))));
+  r.get("/jobs/:id/screenshot", async (c) => {
+    const image = await d.jobs.screenshot(c.req.param("id"));
+    if (!image) return c.json({ error: "This job has no screenshot." }, 404);
+    return c.body(image.slice().buffer, 200, { "Content-Type": "image/jpeg", "Cache-Control": "no-store" });
+  });
 
   r.get("/jobs/:id/events", (c) => {
     const id = c.req.param("id");

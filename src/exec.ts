@@ -10,6 +10,11 @@ export interface RunOptions {
   pathPrefix?: string;
   onLine?: (line: string) => void;
   timeoutMs?: number;
+  // Written to stdin, which is then closed. Without it, stdin is closed empty.
+  input?: string;
+  // Runs the command in its own process group and stops the whole group on timeout, so
+  // processes it started itself, such as an agent's builds, don't outlive it.
+  killGroup?: boolean;
 }
 
 export interface RunResult {
@@ -56,8 +61,12 @@ export function createCommandRunner(options: { pathPrefix?: string } = {}): Comm
           NO_COLOR: "1",
           ...opts.env,
         },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: opts.killGroup === true,
       });
+      // A command that exits before reading all its input closes the pipe; that isn't an error here.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(opts.input ?? "");
       let output = "";
       let stdout = "";
       const emit = (line: string) => opts.onLine?.(line.replace(ANSI, ""));
@@ -87,7 +96,25 @@ export function createCommandRunner(options: { pathPrefix?: string } = {}): Comm
         attach(child.stderr, () => undefined),
       ];
 
-      const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : undefined;
+      // A negative pid signals the whole process group, which a detached child leads.
+      const stop = (signal: NodeJS.Signals) => {
+        if (opts.killGroup && child.pid) {
+          try {
+            process.kill(-child.pid, signal);
+          } catch {
+            // The group has already gone.
+          }
+        } else child.kill(signal);
+      };
+      let forceTimer: NodeJS.Timeout | undefined;
+      const timer = opts.timeoutMs
+        ? setTimeout(() => {
+            stop("SIGTERM");
+            // Processes that ignore SIGTERM get SIGKILL a little later.
+            forceTimer = setTimeout(() => stop("SIGKILL"), 5000);
+            forceTimer.unref();
+          }, opts.timeoutMs)
+        : undefined;
       child.on("error", (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
         // A missing command can surface as EACCES rather than ENOENT, for example when WSL

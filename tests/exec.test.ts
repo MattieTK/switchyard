@@ -78,6 +78,32 @@ describe("createCommandRunner", () => {
     const r = await run(node, ["-e", "setTimeout(() => {}, 10000)"], { timeoutMs: 200 });
     expect(r.code).not.toBe(0);
   });
+
+  it("writes input to stdin and then closes it", async () => {
+    const r = await run(node, ["-e", "process.stdin.pipe(process.stdout)"], { input: "hello\nworld" });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("hello\nworld");
+  });
+
+  it("gives commands without input an empty stdin, so nothing waits on it", async () => {
+    const r = await run(node, ["-e", "process.stdin.on('data', () => {}).on('end', () => console.log('ended'))"], {
+      timeoutMs: 2000,
+    });
+    expect(r.stdout.trim()).toBe("ended");
+  });
+
+  it("stops the command's own child processes with it when killGroup is set", async () => {
+    const script =
+      "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });" +
+      "console.log(c.pid); setTimeout(() => {}, 30000);";
+    const started = Date.now();
+    const r = await run(node, ["-e", script], { timeoutMs: 300, killGroup: true });
+    expect(Date.now() - started).toBeLessThan(5000);
+    const grandchild = Number(r.stdout.trim());
+    // Signal 0 only checks the process exists; give the kernel a moment to reap it.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(grandchild, 0)).toThrow();
+  });
 });
 
 describe("runOrThrow", () => {

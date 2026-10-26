@@ -55,7 +55,7 @@ const queue = createJobQueue(
   (id) => runJob(id, STEPS, { store: jobStore, events, redactor, pipeline, recover }),
   (id, e) => console.error(`Job ${id} stopped unexpectedly:`, redactor.redact(String(e))),
 );
-const jobs = createJobService({ store: jobStore, events, queue, clients, credentials: store });
+const jobs = createJobService({ store: jobStore, events, queue, clients, credentials: store, agents, preferences });
 
 const { failed, queued } = await jobStore.recoverInterrupted();
 if (failed.length) console.log(`${failed.length} job(s) were interrupted last time and can be retried.`);

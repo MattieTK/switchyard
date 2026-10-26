@@ -62,6 +62,10 @@ describe("job routes", () => {
     expect(start).toHaveBeenLastCalledWith(withOptions);
     const badOption = { ...withOptions, options: { switchToPnpm: "yes" } };
     expect((await req("/api/jobs", { method: "POST", json: badOption })).status).toBe(400);
+    const withAgent = { ...withOptions, agent: "codex" };
+    expect((await req("/api/jobs", { method: "POST", json: withAgent })).status).toBe(201);
+    expect(start).toHaveBeenLastCalledWith(withAgent);
+    expect((await req("/api/jobs", { method: "POST", json: { ...withOptions, agent: "gpt" } })).status).toBe(400);
   });
 
   it("returns user input errors with their status", async () => {

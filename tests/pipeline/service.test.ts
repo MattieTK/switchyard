@@ -1,5 +1,8 @@
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { AgentDrivers } from "../../src/agent/drivers.ts";
+import { createPreferencesStore } from "../../src/agent/preferences.ts";
+import type { AgentId } from "../../src/agent/types.ts";
 import { createCredentialStore } from "../../src/auth/store.ts";
 import type { CloudflareClient } from "../../src/clients/cloudflare.ts";
 import type { ClientFactory } from "../../src/clients/factory.ts";
@@ -24,9 +27,27 @@ const { plan: env, values } = buildEnvPlan(
 const plan: MigrationPlan = { ...samplePlan, env };
 
 async function setup(
-  opts: { accountId?: string; plan?: MigrationPlan; existingWorkers?: string[]; pasted?: Partial<CloudflareClient> } = {},
+  opts: {
+    accountId?: string;
+    plan?: MigrationPlan;
+    existingWorkers?: string[];
+    pasted?: Partial<CloudflareClient>;
+    codexSignedIn?: boolean;
+  } = {},
 ) {
   const dir = await makeTempDir();
+  const status = (id: AgentId, signedIn: boolean) => async () => ({
+    id,
+    installed: true,
+    signedIn,
+    detail: signedIn ? "Signed in" : "Not signed in: run codex login",
+  });
+  const agents = {
+    claude: { id: "claude", status: status("claude", true) },
+    codex: { id: "codex", status: status("codex", opts.codexSignedIn ?? true) },
+  } as unknown as AgentDrivers;
+  const preferences = createPreferencesStore(join(dir, "preferences.json"));
+  await preferences.write({ preferred: "claude", models: { claude: "opus", codex: "" } });
   const credentials = createCredentialStore(join(dir, "c.json"));
   if (opts.accountId) {
     await credentials.update(() => ({ cloudflare: { accessToken: "x", expiresAt: 0, accountId: opts.accountId } }));
@@ -44,7 +65,7 @@ async function setup(
     cloudflare: { getWorkerTag, getUser: async () => ({ id: "u-1", email: "me@example.com" }) },
     cloudflareWith,
   } as unknown as ClientFactory;
-  const service = createJobService({ store, events: createJobEvents(), queue, clients, credentials, buildPlan });
+  const service = createJobService({ store, events: createJobEvents(), queue, clients, credentials, buildPlan, agents, preferences });
   return { service, store, queue, buildPlan, getWorkerTag, cloudflareWith };
 }
 
@@ -113,6 +134,30 @@ describe("createJobService", () => {
       switchedFrom: "yarn",
       options: { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: false, switchToPnpm: true },
     });
+  });
+
+  it("records the chosen agent with the model from the preferences", async () => {
+    const { service } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    const job = await service.start({ ...input, skip: ["s", "t"], agent: "claude" });
+    expect(job.plan.agent).toEqual({ id: "claude", model: "opus" });
+  });
+
+  it("uses the CLI's default model when none is saved, and no agent when none was chosen", async () => {
+    const { service } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    expect((await service.start({ ...input, skip: ["s", "t"], agent: "codex" })).plan.agent).toEqual({ id: "codex" });
+    await service.plan("prj_1");
+    expect((await service.start({ ...input, skip: ["s", "t"] })).plan.agent).toBeNull();
+  });
+
+  it("refuses an agent that isn't signed in, and keeps the plan to approve again", async () => {
+    const { service } = await setup({ accountId: "acc", codexSignedIn: false });
+    await service.plan("prj_1");
+    await expect(service.start({ ...input, skip: ["s", "t"], agent: "codex" })).rejects.toThrow(
+      "Codex can't recover failed steps: Not signed in: run codex login.",
+    );
+    expect((await service.start({ ...input, skip: ["s", "t"] })).plan.agent).toBeNull();
   });
 
   it("refuses options the plan didn't offer", async () => {

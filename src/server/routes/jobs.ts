@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { supportForFramework } from "../../adapters/registry.ts";
 import type { Support } from "../../adapters/types.ts";
+import { AGENT_IDS } from "../../agent/types.ts";
 import type { JobEvent } from "../../pipeline/types.ts";
 import type { AppDeps } from "../app.ts";
 
@@ -30,6 +31,7 @@ const startSchema = z.object({
     })
     .partial()
     .optional(),
+  agent: z.enum(AGENT_IDS).nullable().optional(),
 });
 
 // An API token the user pasted for Workers Builds; Cloudflare tokens are short single-line strings.

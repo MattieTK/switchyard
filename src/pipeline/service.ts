@@ -1,4 +1,7 @@
 import type { NextCachePreset } from "../adapters/types.ts";
+import type { AgentDrivers } from "../agent/drivers.ts";
+import { modelFor, type PreferencesStore } from "../agent/preferences.ts";
+import { AGENT_LABELS, type AgentId } from "../agent/types.ts";
 import type { CredentialStore } from "../auth/store.ts";
 import type { ClientFactory } from "../clients/factory.ts";
 import { UserInputError } from "../errors.ts";
@@ -18,6 +21,8 @@ export interface StartInput {
   skip: string[];
   // Upgrade options the user ticked. Missing ones are off.
   options?: Partial<PlanOptions>;
+  // The agent to ask when a step still fails. Missing means none.
+  agent?: AgentId | null;
 }
 
 export interface JobService {
@@ -62,10 +67,24 @@ export function createJobService(d: {
   clients: ClientFactory;
   credentials: CredentialStore;
   buildPlan?: typeof defaultBuildPlan;
+  agents?: AgentDrivers;
+  preferences?: PreferencesStore;
 }): JobService {
   const buildPlan = d.buildPlan ?? defaultBuildPlan;
   // Plans waiting for approval, with their fetched values, held in memory only.
   const drafts = new Map<string, { plan: MigrationPlan; values: EnvValues; accountId: string }>();
+
+  // The agent the user chose, checked now so a job never starts with one that can't run. The
+  // model is fixed for the job, so a retry uses the same one.
+  async function chosenAgent(id: AgentId): Promise<NonNullable<MigrationPlan["agent"]>> {
+    const driver = d.agents?.[id];
+    const status = driver ? await driver.status() : null;
+    if (!status?.signedIn) {
+      throw new UserInputError(`${AGENT_LABELS[id]} can't recover failed steps: ${status?.detail ?? "it isn't set up"}.`);
+    }
+    const model = d.preferences ? modelFor(await d.preferences.read(), id) : undefined;
+    return model ? { id, model } : { id };
+  }
 
   async function accountId(): Promise<string> {
     const id = (await d.credentials.read()).cloudflare?.accountId;
@@ -138,7 +157,13 @@ export function createJobService(d: {
           throw new UserInputError(`Enter a value, or choose Skip, for: ${missing.map((e) => e.key).join(", ")}.`);
         }
         const plan = applyOptions(
-          { ...draft.plan, env, workerName: input.workerName, nextCache: input.nextCache },
+          {
+            ...draft.plan,
+            env,
+            workerName: input.workerName,
+            nextCache: input.nextCache,
+            agent: input.agent ? await chosenAgent(input.agent) : null,
+          },
           input.options,
         );
         job = await d.store.create(plan, draft.accountId, values);

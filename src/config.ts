@@ -37,4 +37,7 @@ export const CLOUDFLARE_SCOPES = [
   "zone.read",
   "dns.read",
   "workers-routes.write",
+  // Browser Run, for the screenshot of the deployed site. The OAuth client must allow it too, or
+  // Cloudflare rejects the whole sign-in with invalid_scope.
+  "browser-rendering.write",
 ] as const;

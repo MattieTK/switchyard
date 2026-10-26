@@ -1,16 +1,20 @@
+import type { PreviousAttempt } from "../agent/prompt.ts";
 import { CommandError } from "../exec.ts";
 import { isAuthError, type Service } from "../http.ts";
 import type { Redactor } from "../redact.ts";
 import { activityFromLine, describeCommand } from "./activity.ts";
 import type { JobEvents } from "./events.ts";
 import type { JobStore } from "./job-store.ts";
-import { PauseError, type Job, type PipelineDeps, type Step, type StepContext } from "./types.ts";
+import { failureInfo, MAX_AGENT_ATTEMPTS, RECOVERABLE, type RecoveryRequest, type RecoveryResult } from "./recovery.ts";
+import { type AgentRun, PauseError, type Job, type PipelineDeps, type Step, type StepContext, type StepId } from "./types.ts";
 
 export interface RunnerDeps {
   store: JobStore;
   events: JobEvents;
   redactor: Redactor;
   pipeline: PipelineDeps;
+  // Asks the agent the plan names to recover a failed step. Without it, failed steps just fail.
+  recover?: (r: RecoveryRequest) => Promise<RecoveryResult>;
 }
 
 const SERVICE_NAMES: Record<Service, string> = { vercel: "Vercel", cloudflare: "Cloudflare", github: "GitHub" };
@@ -32,10 +36,17 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
     d.events.emit({ type: "job", job });
   };
 
+  // Agent attempts made during this run, by the step that failed. Retry starts them again.
+  const attempts = new Map<StepId, PreviousAttempt[]>();
+  // A recovered step's agent run, until the step passes when it runs again.
+  const awaitingRerun = new Map<StepId, AgentRun>();
+
   job.status = "running";
   await publish();
 
-  for (const step of steps) {
+  // An index rather than for…of, so a recovery can go back to an earlier step.
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index] as Step;
     const state = job.steps.find((s) => s.id === step.id);
     if (!state) throw new Error(`Job ${jobId} has no state for step ${step.id}`);
     if (state.status === "done") continue;
@@ -54,7 +65,7 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
         .appendLog(jobId, `[${step.id}] ${clean}`)
         .catch(() => console.error(`Could not write the log for job ${jobId}`));
       d.events.emit({ type: "log", jobId, step: step.id, line: clean });
-      announce(activityFromLine(clean));
+      announce(clean.startsWith("Agent: ") ? clean : activityFromLine(clean));
     };
     // Each command a step starts, and each package manager it sets up, is announced first.
     const deps: PipelineDeps = {
@@ -81,6 +92,11 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
     try {
       await step.run(ctx);
       state.status = "done";
+      const recovered = awaitingRerun.get(step.id);
+      if (recovered) {
+        recovered.rerunPassed = true;
+        awaitingRerun.delete(step.id);
+      }
       await publish();
     } catch (e) {
       if (e instanceof PauseError) {
@@ -95,8 +111,22 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
         };
         job.status = "paused";
       } else {
+        const error = d.redactor.redact(describe(e));
+        const recovery = await recoverStep(step.id, e, error, log);
+        if (recovery.rerunFrom) {
+          // The steps from the re-run point to this one start again; their outputs described the
+          // tree before the agent changed it. Later steps never ran, so they're still pending.
+          const from = steps.findIndex((s) => s.id === recovery.rerunFrom);
+          for (const s of steps.slice(from, index + 1)) {
+            const st = job.steps.find((x) => x.id === s.id);
+            if (st) Object.assign(st, { status: "pending", outputs: {}, error: undefined, pause: undefined });
+          }
+          await publish();
+          index = from - 1;
+          continue;
+        }
         state.status = "failed";
-        state.error = d.redactor.redact(describe(e));
+        state.error = recovery.note ? `${error} ${d.redactor.redact(recovery.note)}` : error;
         job.status = "failed";
       }
       log(state.error ?? state.pause?.reason ?? "Stopped");
@@ -113,6 +143,42 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
   await d.store.flush(jobId);
   await publish();
   return job;
+
+  // Asks the plan's agent to recover a failed step, when the step and the failure allow it.
+  // Returns where to run again from, or a note to add to the step's error.
+  async function recoverStep(
+    id: StepId,
+    e: unknown,
+    error: string,
+    log: (line: string) => void,
+  ): Promise<{ rerunFrom?: StepId; note?: string }> {
+    const target = RECOVERABLE[id];
+    const failure = failureInfo(e, (t) => d.redactor.redact(t));
+    if (!d.recover || !job?.plan.agent || !target || !failure) return {};
+    const previous = attempts.get(id) ?? [];
+    if (previous.length >= MAX_AGENT_ATTEMPTS) return {};
+    // The step failed again after the last attempt; that failure belongs to it.
+    const last = previous.at(-1);
+    if (last) last.error = error;
+    log(error);
+
+    let result: RecoveryResult;
+    try {
+      result = await d.recover({ job, step: id, failure, values, attempt: previous.length + 1, previous: [...previous], log });
+    } catch (err) {
+      return { note: `Asking the agent failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (result.run) {
+      job.agentRuns = [...(job.agentRuns ?? []), result.run];
+      if (result.run.fixCommit) job.fixBase = result.run.fixCommit;
+      attempts.set(id, [
+        ...previous,
+        { attempt: result.run.attempt, changedFiles: result.run.changedFiles, summary: result.run.summary, error: "" },
+      ]);
+      if (result.recovered) awaitingRerun.set(id, result.run);
+    }
+    return result.recovered ? { rerunFrom: target.rerunFrom } : { note: result.note };
+  }
 }
 
 export function resetForRetry(job: Job): Job {
@@ -127,7 +193,9 @@ export function resetForRetry(job: Job): Job {
 
 // Runs every step again, so a fix to an earlier step, such as the conversion, reaches the
 // later ones. Clone and convert start from a clean checkout, and the steps after them reuse
-// the Worker, branch, pull request and triggers they find.
+// the Worker, branch, pull request and triggers they find. An agent's changes aren't kept:
+// starting over means starting from the production branch.
 export function resetForRestart(job: Job): Job {
-  return { ...job, status: "queued", steps: job.steps.map((s) => ({ id: s.id, status: "pending", outputs: {} })) };
+  const { fixBase: _fixBase, agentRuns: _agentRuns, ...rest } = job;
+  return { ...rest, status: "queued", steps: job.steps.map((s) => ({ id: s.id, status: "pending", outputs: {} })) };
 }

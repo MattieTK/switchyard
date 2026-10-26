@@ -3,7 +3,7 @@ import { MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../con
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
 import { execString, runScriptCommand } from "../../translate/package-manager.ts";
-import { buildDashboardUrl, interpretBuild } from "../build-status.ts";
+import { BuildFailedError, buildDashboardUrl, interpretBuild } from "../build-status.ts";
 import { PauseError, type Step } from "../types.ts";
 import { requireOutput, requireRepo } from "./shared.ts";
 
@@ -165,7 +165,9 @@ export const startBuildStep: Step = {
       const state = interpretBuild(build);
       if (state === "success") return;
       if (state === "failure") {
-        throw new Error(`The Cloudflare build finished with "${build.build_outcome ?? build.status}". Open the build log: ${url}`);
+        // The log is only extra detail for an agent; failing to read it mustn't hide the failure.
+        const log = await cf.getBuildLogs(accountId, buildUuid).catch(() => "");
+        throw new BuildFailedError(`The Cloudflare build finished with "${build.build_outcome ?? build.status}". Open the build log: ${url}`, log);
       }
       if (ctx.deps.now() > deadline) {
         throw new Error(`The Cloudflare build is still running after 30 minutes. Check it in the dashboard: ${url}`);

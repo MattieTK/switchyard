@@ -16,6 +16,7 @@ import { resolvePaths } from "../paths.ts";
 import { createJobEvents } from "../pipeline/events.ts";
 import { createJobStore } from "../pipeline/job-store.ts";
 import { createJobQueue } from "../pipeline/queue.ts";
+import { createRecovery } from "../pipeline/recovery.ts";
 import { runJob } from "../pipeline/runner.ts";
 import { createJobService } from "../pipeline/service.ts";
 import { STEPS } from "../pipeline/steps/index.ts";
@@ -49,8 +50,9 @@ const pipeline: PipelineDeps = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: Date.now,
 };
+const recover = createRecovery({ agents, store: jobStore, redactor, pipeline });
 const queue = createJobQueue(
-  (id) => runJob(id, STEPS, { store: jobStore, events, redactor, pipeline }),
+  (id) => runJob(id, STEPS, { store: jobStore, events, redactor, pipeline, recover }),
   (id, e) => console.error(`Job ${id} stopped unexpectedly:`, redactor.redact(String(e))),
 );
 const jobs = createJobService({ store: jobStore, events, queue, clients, credentials: store });

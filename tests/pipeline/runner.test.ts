@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { CommandError } from "../../src/exec.ts";
 import { ApiError } from "../../src/http.ts";
+import { BuildFailedError } from "../../src/pipeline/build-status.ts";
+import type { MigrationPlan } from "../../src/pipeline/plan.ts";
+import type { RecoveryRequest, RecoveryResult } from "../../src/pipeline/recovery.ts";
 import { createRedactor } from "../../src/redact.ts";
 import { createJobEvents } from "../../src/pipeline/events.ts";
 import { createJobStore } from "../../src/pipeline/job-store.ts";
 import { createJobQueue } from "../../src/pipeline/queue.ts";
 import { resetForRestart, resetForRetry, runJob } from "../../src/pipeline/runner.ts";
-import { PauseError, type JobEvent, type PipelineDeps, type Step, type StepId } from "../../src/pipeline/types.ts";
+import { type AgentRun, PauseError, type JobEvent, type PipelineDeps, type Step, type StepId } from "../../src/pipeline/types.ts";
 import { samplePlan } from "../helpers/sample-plan.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
 
@@ -163,7 +167,139 @@ describe("resetForRetry", () => {
   });
 });
 
+describe("runJob with agent recovery", () => {
+  const failing = (cmd = "pnpm") => new CommandError(cmd, ["run", "build"], { code: 1, output: "boom super-secret", stdout: "" });
+
+  async function withAgent(over: { agent?: MigrationPlan["agent"] } = {}) {
+    const s = await setup();
+    const job = (await s.store.get(s.job.id))!;
+    job.plan = { ...job.plan, agent: over.agent === undefined ? { id: "claude", model: "opus" } : over.agent };
+    await s.store.save(job);
+    const requests: RecoveryRequest[] = [];
+    const answers: RecoveryResult[] = [];
+    const recover = async (r: RecoveryRequest): Promise<RecoveryResult> => {
+      requests.push(r);
+      return answers.shift() ?? { recovered: false, note: "no answer", run: null };
+    };
+    return { ...s, requests, answers, deps: { ...s.deps, recover } };
+  }
+
+  const agentRun = (step: StepId, attempt: number, over: Partial<AgentRun> = {}): AgentRun => ({
+    step,
+    agent: "claude",
+    attempt,
+    startedAt: "2026-10-26T00:00:00.000Z",
+    verdict: "fixed",
+    summary: "fixed it",
+    changedFiles: ["vite.config.ts"],
+    ...over,
+  });
+
+  it("fails as before when no agent was chosen", async () => {
+    const { deps, job, requests } = await withAgent({ agent: null });
+    const done = await runJob(job.id, [step("build", async () => Promise.reject(failing()))], deps);
+    expect(done.status).toBe("failed");
+    expect(requests).toEqual([]);
+  });
+
+  it("runs the step again after the agent fixed it, and records that the re-run passed", async () => {
+    const { deps, job, answers, requests } = await withAgent();
+    answers.push({ recovered: true, run: agentRun("build", 1) });
+    let runs = 0;
+    const done = await runJob(
+      job.id,
+      [
+        step("build", async () => {
+          runs++;
+          if (runs === 1) throw failing();
+        }),
+      ],
+      deps,
+    );
+    expect(done.status).toBe("done");
+    expect(runs).toBe(2);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ step: "build", attempt: 1, previous: [] });
+    expect(done.agentRuns).toEqual([{ ...agentRun("build", 1), rerunPassed: true }]);
+  });
+
+  it("stops after two attempts and tells the second about the first", async () => {
+    const { deps, job, answers, requests } = await withAgent();
+    answers.push({ recovered: true, run: agentRun("build", 1) }, { recovered: true, run: agentRun("build", 2) });
+    const done = await runJob(job.id, [step("build", async () => Promise.reject(failing()))], deps);
+    expect(done.status).toBe("failed");
+    expect(requests.map((r) => r.attempt)).toEqual([1, 2]);
+    expect(requests[1]?.previous).toEqual([
+      { attempt: 1, changedFiles: ["vite.config.ts"], summary: "fixed it", error: expect.stringContaining("exited with code 1") },
+    ]);
+    expect(done.agentRuns?.map((r) => r.rerunPassed)).toEqual([undefined, undefined]);
+  });
+
+  it("adds the agent's reason to the step's error when it can't recover", async () => {
+    const { deps, job, answers } = await withAgent();
+    answers.push({ recovered: false, note: "Claude couldn't fix it: needs a Supabase key", run: agentRun("build", 1, { verdict: "cannot-fix" }) });
+    const done = await runJob(job.id, [step("build", async () => Promise.reject(failing()))], deps);
+    expect(done.steps.find((s) => s.id === "build")?.error).toBe(
+      "pnpm run build exited with code 1. The output is in the log. Claude couldn't fix it: needs a Supabase key",
+    );
+    expect(done.agentRuns).toHaveLength(1);
+  });
+
+  it("leaves pauses, plain errors and steps it doesn't cover to the user", async () => {
+    const { deps, job, requests } = await withAgent();
+    await runJob(job.id, [step("build", async () => Promise.reject(new Error("The Worker wasn't found")))], deps);
+    await runJob(job.id, [step("build", async () => Promise.reject(new PauseError({ reason: "install the app" })))], deps);
+    await runJob(job.id, [step("push", async () => Promise.reject(failing("git")))], deps);
+    expect(requests).toEqual([]);
+  });
+
+  it("runs from the build again when the Cloudflare build failed", async () => {
+    const { deps, job, answers } = await withAgent();
+    answers.push({ recovered: true, run: agentRun("start-build", 1) });
+    const order: string[] = [];
+    let cloudRuns = 0;
+    const steps = (["build", "deploy", "push", "pr", "builds"] as const).map((id) =>
+      step(id, async (ctx) => {
+        order.push(id);
+        ctx.outputs.ran = "yes";
+      }),
+    );
+    steps.push(
+      step("start-build", async () => {
+        order.push("start-build");
+        if (++cloudRuns === 1) throw new BuildFailedError("The Cloudflare build finished with \"fail\".", "npm ERR!");
+      }),
+    );
+    const done = await runJob(job.id, steps, deps);
+    expect(done.status).toBe("done");
+    expect(order).toEqual(["build", "deploy", "push", "pr", "builds", "start-build", "build", "deploy", "push", "pr", "builds", "start-build"]);
+    expect(done.agentRuns?.[0]?.rerunPassed).toBe(true);
+  });
+
+  it("keeps the fix commit for the conversion", async () => {
+    const { deps, job, answers } = await withAgent();
+    answers.push({ recovered: true, run: agentRun("convert", 1, { fixCommit: "abc123" }) });
+    let runs = 0;
+    const done = await runJob(job.id, [step("convert", async () => (++runs === 1 ? Promise.reject(failing()) : undefined))], deps);
+    expect(done.fixBase).toBe("abc123");
+    expect(done.status).toBe("done");
+  });
+
+  it("never passes values to the recovery unredacted", async () => {
+    const { deps, job, requests } = await withAgent();
+    await runJob(job.id, [step("build", async () => Promise.reject(failing()))], deps);
+    expect(requests[0]?.failure.output).toBe("boom ***");
+  });
+});
+
 describe("resetForRestart", () => {
+  it("forgets agent changes, since the job starts again from the production branch", async () => {
+    const { job } = await setup();
+    const r = resetForRestart({ ...job, fixBase: "abc", agentRuns: [] });
+    expect(r.fixBase).toBeUndefined();
+    expect(r.agentRuns).toBeUndefined();
+  });
+
   it("sets every step back to pending, so the job runs again from the clone", async () => {
     const { job } = await setup();
     job.steps[0]!.status = "done";

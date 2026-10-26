@@ -1,4 +1,5 @@
 import type { Adapter } from "../adapters/types.ts";
+import type { AgentId, Verdict } from "../agent/types.ts";
 import type { CloudflareClient } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
 import type { CommandRunner } from "../exec.ts";
@@ -30,6 +31,25 @@ export interface StepState {
 
 export type JobStatus = "queued" | "running" | "paused" | "failed" | "done";
 
+// One time an agent was asked to recover a failed step.
+export interface AgentRun {
+  step: StepId;
+  agent: AgentId;
+  model?: string;
+  attempt: number;
+  startedAt: string;
+  verdict: Verdict;
+  // The agent's one-sentence account of what it changed, or why it couldn't.
+  summary: string;
+  changedFiles: string[];
+  // Convert only: the commit holding the agent's changes.
+  fixCommit?: string;
+  // Why Switchyard didn't run the step again.
+  error?: string;
+  // Whether the step passed when it ran again afterwards. Unset until it has.
+  rerunPassed?: boolean;
+}
+
 export interface Job {
   id: string;
   createdAt: string;
@@ -37,6 +57,10 @@ export interface Job {
   plan: MigrationPlan;
   status: JobStatus;
   steps: StepState[];
+  // Kept across retries, so the pull request and the job page can list every agent run.
+  agentRuns?: AgentRun[];
+  // The commit convert starts from instead of the production branch, once an agent fixed it.
+  fixBase?: string;
 }
 
 export type JobEvent =

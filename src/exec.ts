@@ -28,12 +28,15 @@ export interface RunResult {
 export type CommandRunner = (cmd: string, args: readonly string[], opts?: RunOptions) => Promise<RunResult>;
 
 export class CommandError extends Error {
+  readonly command: string;
   readonly code: number;
   readonly output: string;
 
   constructor(cmd: string, args: readonly string[], result: RunResult) {
-    super(`${[cmd, ...args].join(" ")} exited with code ${result.code}`);
+    const command = [cmd, ...args].join(" ");
+    super(`${command} exited with code ${result.code}`);
     this.name = "CommandError";
+    this.command = command;
     this.code = result.code;
     this.output = result.output;
   }

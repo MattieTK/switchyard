@@ -87,6 +87,16 @@ describe("createCloudflareClient", () => {
     expect((await c.getBuild("acc", "b-1")).status).toBe("running");
   });
 
+  it("reads a build's log across pages as text", async () => {
+    const { c, calls } = client([
+      ok({ lines: [[1700000000, "Cloning repository"], [1700000001, "npm ERR! peer dep"]], cursor: "c2", truncated: true }),
+      ok({ lines: [[1700000002, "Build failed"]], truncated: false }),
+    ]);
+    expect(await c.getBuildLogs("acc", "b-1")).toBe("Cloning repository\nnpm ERR! peer dep\nBuild failed");
+    expect(calls[0]?.url).toBe(`${BASE}/accounts/acc/builds/builds/b-1/logs`);
+    expect(calls[1]?.url).toBe(`${BASE}/accounts/acc/builds/builds/b-1/logs?cursor=c2`);
+  });
+
   it("verifies its own token, registers a build token and repoints a trigger at it", async () => {
     const { c, calls } = client([
       ok({ id: "tok-1", status: "active" }),

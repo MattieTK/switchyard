@@ -1,5 +1,6 @@
 import { pickAdapter } from "../adapters/registry.ts";
 import type { NextCachePreset, Support } from "../adapters/types.ts";
+import type { AgentId } from "../agent/types.ts";
 import { readOnlyAccountMessage, type CloudflareClient, type CloudflareZone } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
 import type { VercelClient, VercelDomain } from "../clients/vercel.ts";
@@ -64,6 +65,8 @@ export interface MigrationPlan {
   options?: PlanOptions;
   // The project's package manager before the user chose to switch to pnpm.
   switchedFrom?: PackageManager;
+  // The agent asked to recover a step that still fails, chosen when the plan was approved.
+  agent?: { id: AgentId; model?: string } | null;
 }
 
 export interface PlanDeps {

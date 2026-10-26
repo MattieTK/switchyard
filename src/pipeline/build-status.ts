@@ -15,6 +15,18 @@ export function interpretBuild(b: BuildInfo): BuildState {
   return "running";
 }
 
+// A Workers Builds build that finished without succeeding, with the end of its log when
+// Cloudflare returned one, so an agent can be told what went wrong.
+export class BuildFailedError extends Error {
+  readonly log: string;
+
+  constructor(message: string, log: string) {
+    super(message);
+    this.name = "BuildFailedError";
+    this.log = log;
+  }
+}
+
 export function buildDashboardUrl(accountId: string, workerName: string, buildUuid: string): string {
   return `https://dash.cloudflare.com/${accountId}/workers/services/view/${workerName}/production/builds/${buildUuid}`;
 }

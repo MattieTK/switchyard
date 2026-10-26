@@ -103,6 +103,22 @@ describe("convertStep", () => {
     expect(ctx.outputs).toEqual({ projectDir: repoDir, warnings: '["heads up"]' });
   });
 
+  it("starts from an agent's fix commit when there is one", async () => {
+    const repoDir = await makeTempDir();
+    const { run, calls } = fakeRunner();
+    const adapter = {
+      id: "nextjs",
+      async convert(c: { dir: string }) {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "vinext/server/fetch-handler", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx, job } = makeContext({ deps: { run, adapter: () => adapter }, outputs: { clone: { dir: repoDir } } });
+    job.fixBase = "abc123";
+    await convertStep.run(ctx);
+    expect(calls[0]?.args).toEqual(["reset", "--hard", "abc123"]);
+  });
+
   it("passes the chosen upgrade options to the adapter, and defaults for older job files", async () => {
     const seen: unknown[] = [];
     const adapter = {

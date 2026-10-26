@@ -257,8 +257,9 @@ export const convertStep: Step = {
     const repoDir = requireOutput(ctx, "clone", "dir");
     const local = git(ctx, repoDir);
     // Retries start from a clean checkout including dependencies, so a retry never
-    // edits twice or reuses a node_modules left half-written by a failed install.
-    await local(["reset", "--hard", `origin/${repo.productionBranch}`]);
+    // edits twice or reuses a node_modules left half-written by a failed install. Once an agent
+    // fixed the project for conversion, its commit on top of the branch is that clean start.
+    await local(["reset", "--hard", ctx.job.fixBase ?? `origin/${repo.productionBranch}`]);
     await local(["clean", "-fdx"]);
 
     const adapter = ctx.deps.adapter(plan.adapterId ?? "");

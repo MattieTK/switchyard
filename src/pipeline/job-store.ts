@@ -21,6 +21,8 @@ export interface JobStore {
   readScreenshot(id: string): Promise<Uint8Array | null>;
   clearLog(id: string): Promise<void>;
   recoverInterrupted(): Promise<{ failed: string[]; queued: string[] }>;
+  // Where an agent run's raw events are kept, beside the job's log.
+  agentEventsFile(id: string, step: string, attempt: number): string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -111,6 +113,7 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
       if (!UUID.test(id)) return "";
       return readFile(logFile(id), "utf8").catch(() => "");
     },
+    agentEventsFile: (id, step, attempt) => join(dir, `${id}.agent-${step}-${attempt}.jsonl`),
     clearLog(id) {
       // Joins the append chain, so lines logged before the clear don't land after it.
       const next = (logChains.get(id) ?? Promise.resolve()).then(() => rm(logFile(id), { force: true }));

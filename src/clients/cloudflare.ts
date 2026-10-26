@@ -89,6 +89,8 @@ export interface CloudflareClient {
   setTriggerEnv(accountId: string, triggerUuid: string, vars: TriggerVariables): Promise<void>;
   startBuild(accountId: string, triggerUuid: string, branch: string): Promise<string>;
   getBuild(accountId: string, buildUuid: string): Promise<BuildInfo>;
+  // The build's log as text, one line per log entry.
+  getBuildLogs(accountId: string, buildUuid: string): Promise<string>;
   // A JPEG of a page as Browser Run renders it. Needs the browser-rendering.write scope.
   screenshot(accountId: string, url: string): Promise<Uint8Array>;
 }
@@ -181,6 +183,21 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       return r.build_uuid;
     },
     getBuild: (accountId, buildUuid) => call<BuildInfo>(`${acct(accountId)}/builds/builds/${buildUuid}`),
+    // Pages are followed by cursor; the page limit stops a log that never ends from holding a job.
+    async getBuildLogs(accountId, buildUuid) {
+      const lines: string[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 50; page++) {
+        const r = await call<{ lines?: [number | string, number | string][]; cursor?: string; truncated?: boolean }>(
+          `${acct(accountId)}/builds/builds/${encodeURIComponent(buildUuid)}/logs`,
+          cursor ? { query: { cursor } } : {},
+        );
+        for (const entry of r.lines ?? []) lines.push(String(entry[1] ?? ""));
+        if (!r.truncated || !r.cursor || r.cursor === cursor) break;
+        cursor = r.cursor;
+      }
+      return lines.join("\n");
+    },
     screenshot: (accountId, url) =>
       http.request<Uint8Array>(`${acct(accountId)}/browser-run/screenshot`, {
         method: "POST",

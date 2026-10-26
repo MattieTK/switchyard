@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BuildInfo, CloudflareClient, TriggerInput } from "../../../src/clients/cloudflare.ts";
 import type { GitHubClient } from "../../../src/clients/github.ts";
 import { ApiError } from "../../../src/http.ts";
+import { BuildFailedError } from "../../../src/pipeline/build-status.ts";
 import { buildsStep, buildTokenFormUrl, PREVIEW_DEPLOY_COMMAND, startBuildStep } from "../../../src/pipeline/steps/builds.ts";
 import { STEPS } from "../../../src/pipeline/steps/index.ts";
 import { PauseError, STEP_IDS } from "../../../src/pipeline/types.ts";
@@ -165,10 +166,11 @@ describe("buildsStep", () => {
 });
 
 describe("startBuildStep", () => {
-  function withBuilds(states: BuildInfo[], now: () => number = () => 0) {
+  function withBuilds(states: BuildInfo[], now: () => number = () => 0, logs: () => Promise<string> = async () => "") {
     const cf = {
       startBuild: vi.fn(async () => "b-1"),
       getBuild: vi.fn(async () => states.shift() ?? { build_uuid: "b-1", status: "running" }),
+      getBuildLogs: vi.fn(logs),
     } as unknown as CloudflareClient;
     return makeContext({ deps: { cloudflare: cf, now }, outputs: { builds: { previewTrigger: "tr-2" } } });
   }
@@ -189,6 +191,21 @@ describe("startBuildStep", () => {
   it("fails with a link to the build log when the build fails", async () => {
     const { ctx } = withBuilds([{ build_uuid: "b-1", status: "stopped", build_outcome: "fail" }]);
     await expect(startBuildStep.run(ctx)).rejects.toThrow(/finished with "fail".*builds\/b-1/);
+  });
+
+  it("carries the build's log with the failure, and still fails when the log can't be read", async () => {
+    const failed = { build_uuid: "b-1", status: "stopped", build_outcome: "fail" };
+    const withLog = withBuilds([failed], () => 0, async () => "npm ERR! peer dep");
+    const error = await startBuildStep.run(withLog.ctx).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BuildFailedError);
+    expect((error as BuildFailedError).log).toBe("npm ERR! peer dep");
+
+    const noLog = withBuilds([{ ...failed }], () => 0, async () => {
+      throw new Error("403");
+    });
+    const second = await startBuildStep.run(noLog.ctx).catch((e: unknown) => e);
+    expect(second).toBeInstanceOf(BuildFailedError);
+    expect((second as BuildFailedError).log).toBe("");
   });
 
   it("gives up after 30 minutes", async () => {

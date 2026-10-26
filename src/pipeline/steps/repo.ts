@@ -5,6 +5,7 @@ import { gitAuthEnv } from "../../auth/github.ts";
 import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
+import { useNativeFetch } from "../../codegen/native-fetch.ts";
 import {
   allowBuildsIn,
   approveBuilds,
@@ -284,6 +285,7 @@ export const convertStep: Step = {
       ...(yarnWarning ? [yarnWarning] : []),
       ...(lockWarning ? [lockWarning] : []),
       ...result.warnings,
+      ...(await replaceFetchPolyfills(ctx, dir)),
       ...(await updateToolchainFiles(
         dir,
         repoDir,
@@ -346,6 +348,43 @@ const LOCKFILES: Record<PackageManager, readonly string[]> = {
 };
 
 // The package's version in the production branch's lockfile, from before Switchyard changed anything.
+const SOURCE_FILES = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs"];
+
+// Rewrites imports of fetch polyfills in the project's tracked source files to use the fetch
+// built into Workers (see FETCH_POLYFILLS). Returns warnings naming the files it changed and
+// those that still import a polyfill in a way it couldn't replace exactly.
+async function replaceFetchPolyfills(ctx: StepContext, dir: string): Promise<string[]> {
+  const listed = await ctx.deps.run("git", ["ls-files", "-z", "--", ...SOURCE_FILES], { cwd: dir });
+  if (listed.code !== 0) return [];
+  const changed = new Map<string, string[]>();
+  const kept = new Map<string, string[]>();
+  for (const file of listed.output.split("\0").filter((f) => SOURCE_FILES.some((p) => f.endsWith(p.slice(1))))) {
+    const path = join(dir, file);
+    const code = await readFile(path, "utf8").catch(() => null);
+    if (code === null) continue;
+    const result = useNativeFetch(code, file);
+    if (result.code !== null) {
+      await writeFile(path, result.code);
+      changed.set(file, result.replaced);
+    }
+    if (result.kept.length) kept.set(file, result.kept);
+  }
+  const unique = (lists: Iterable<string[]>) => [...new Set([...lists].flat())];
+  const warnings: string[] = [];
+  if (changed.size) {
+    const packages = unique(changed.values());
+    warnings.push(
+      `Switchyard replaced the imports of ${packages.join(", ")} in ${[...changed.keys()].join(", ")} with the fetch built into Workers. These packages fill in fetch where a platform lacked it, and their Node.js versions can break once bundled for Workers (isomorphic-fetch fails with "n.call is not a function"). You can remove ${packages.length === 1 ? "it" : "them"} from package.json once nothing else imports ${packages.length === 1 ? "it" : "them"}.`,
+    );
+  }
+  for (const [file, packages] of kept) {
+    warnings.push(
+      `${file} still imports ${packages.join(", ")} in a way Switchyard didn't rewrite. If it fails on Workers, use the built-in fetch there instead.`,
+    );
+  }
+  return warnings;
+}
+
 // The packages whose build scripts pnpm skipped in the converted project. Older pnpm releases
 // without the command, or a failure, count as none.
 async function pnpmIgnoredBuilds(ctx: StepContext, dir: string): Promise<string[]> {

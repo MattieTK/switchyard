@@ -55,6 +55,8 @@ export interface PipelineDeps {
   // Makes sure the project's package manager can run, setting it up if needed.
   ensurePackageManager(pm: PackageManager, cwd: string, log: (line: string) => void): Promise<void>;
   workDir: string;
+  // Keeps a JPEG of a job's deployed site for the job page, or removes it when given null.
+  saveScreenshot(jobId: string, image: Uint8Array | null): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }

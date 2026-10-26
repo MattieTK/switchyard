@@ -32,6 +32,7 @@ export function makeContext(
     cloudflareToken: async () => "cf-token",
     adapter: () => null,
     ensurePackageManager: async () => {},
+    saveScreenshot: async () => {},
     workDir: "/tmp/switchyard-test-work",
     sleep: async () => {},
     now: () => 0,

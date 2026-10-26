@@ -89,6 +89,8 @@ export interface CloudflareClient {
   setTriggerEnv(accountId: string, triggerUuid: string, vars: TriggerVariables): Promise<void>;
   startBuild(accountId: string, triggerUuid: string, branch: string): Promise<string>;
   getBuild(accountId: string, buildUuid: string): Promise<BuildInfo>;
+  // A JPEG of a page as Browser Run renders it. Needs the browser-rendering.write scope.
+  screenshot(accountId: string, url: string): Promise<Uint8Array>;
 }
 
 interface Envelope<T> {
@@ -179,5 +181,16 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       return r.build_uuid;
     },
     getBuild: (accountId, buildUuid) => call<BuildInfo>(`${acct(accountId)}/builds/builds/${buildUuid}`),
+    screenshot: (accountId, url) =>
+      http.request<Uint8Array>(`${acct(accountId)}/browser-run/screenshot`, {
+        method: "POST",
+        as: "bytes",
+        body: {
+          url,
+          viewport: { width: 1280, height: 800 },
+          gotoOptions: { waitUntil: "networkidle0", timeout: 30_000 },
+          screenshotOptions: { type: "jpeg", quality: 75 },
+        },
+      }),
   };
 }

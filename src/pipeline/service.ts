@@ -29,6 +29,8 @@ export interface JobService {
   restart(id: string): Promise<Job>;
   // Registers a user API token as the Workers Builds token for a job paused at the builds step.
   submitBuildToken(id: string, token: string): Promise<Job>;
+  // A JPEG of the job's deployed site, when one was taken.
+  screenshot(id: string): Promise<Uint8Array | null>;
   log(id: string): Promise<string>;
   subscribe(id: string, fn: (e: JobEvent) => void): () => void;
 }
@@ -194,6 +196,7 @@ export function createJobService(d: {
     },
 
     log: (id) => d.store.readLog(id),
+    screenshot: (id) => d.store.readScreenshot(id),
     subscribe: (id, fn) => d.events.subscribe(id, fn),
   };
 }

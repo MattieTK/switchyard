@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileSecure } from "../fs-secure.ts";
 import type { EnvValues } from "../translate/env-plan.ts";
@@ -16,6 +16,9 @@ export interface JobStore {
   appendLog(id: string, line: string): Promise<void>;
   flush(id: string): Promise<void>;
   readLog(id: string): Promise<string>;
+  // A JPEG of the deployed site, or null to remove it.
+  writeScreenshot(id: string, image: Uint8Array | null): Promise<void>;
+  readScreenshot(id: string): Promise<Uint8Array | null>;
   clearLog(id: string): Promise<void>;
   recoverInterrupted(): Promise<{ failed: string[]; queued: string[] }>;
 }
@@ -29,6 +32,7 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
   const jobFile = (id: string) => join(dir, `${id}.json`);
   const valuesFile = (id: string) => join(dir, `${id}.values.json`);
   const logFile = (id: string) => join(dir, `${id}.log`);
+  const screenshotFile = (id: string) => join(dir, `${id}.screenshot.jpg`);
 
   async function readJson<T>(file: string): Promise<T | null> {
     try {
@@ -93,6 +97,15 @@ export function createJobStore(dir: string, opts: { now?: () => Date; newId?: ()
     flush(id) {
       // The chain tail never rejects, so this resolves once every append issued so far has settled.
       return logChains.get(id) ?? Promise.resolve();
+    },
+    async writeScreenshot(id, image) {
+      if (image === null) await rm(screenshotFile(id), { force: true });
+      else await writeFile(screenshotFile(id), image, { mode: 0o600 });
+    },
+    async readScreenshot(id) {
+      if (!UUID.test(id)) return null;
+      const data = await readFile(screenshotFile(id)).catch(() => null);
+      return data ? new Uint8Array(data) : null;
     },
     async readLog(id) {
       if (!UUID.test(id)) return "";

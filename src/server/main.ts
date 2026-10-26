@@ -40,6 +40,7 @@ const pipeline: PipelineDeps = {
   adapter: adapterById,
   ensurePackageManager: (pm, cwd, log) => ensurePackageManager({ pm, cwd, run, binDir: paths.binDir, log }),
   workDir: paths.workDir,
+  saveScreenshot: (jobId, image) => jobStore.writeScreenshot(jobId, image),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: Date.now,
 };

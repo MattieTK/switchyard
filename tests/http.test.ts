@@ -18,6 +18,14 @@ function client(responses: Parameters<typeof fakeFetch>[0], sleeps: number[] = [
 }
 
 describe("createJsonClient", () => {
+  it("returns the raw bytes of a binary response when asked", async () => {
+    const image = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+    const { c, calls } = client([new Response(image, { headers: { "content-type": "image/jpeg" } })]);
+    const res = await c.request<Uint8Array>("/shot", { method: "POST", body: { url: "https://x" }, as: "bytes" });
+    expect([...res]).toEqual([...image]);
+    expect((calls[0]?.init?.headers as Record<string, string>).Accept).toBe("*/*");
+  });
+
   it("sends bearer auth, query and JSON body, and parses the response", async () => {
     const { c, calls } = client([json({ ok: 1 })]);
     const res = await c.request<{ ok: number }>("/things", {

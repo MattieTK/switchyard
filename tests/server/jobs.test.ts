@@ -81,6 +81,16 @@ describe("job routes", () => {
     expect((await req(`/api/jobs/${job.id}`)).status).toBe(404);
   });
 
+  it("serves the deployed site's screenshot, or 404 when there is none", async () => {
+    const screenshot = vi.fn(async (id: string) => (id === job.id ? new Uint8Array([0xff, 0xd8]) : null));
+    const { req } = await makeApp({ jobs: { screenshot } as unknown as JobService });
+    const res = await req(`/api/jobs/${job.id}/screenshot`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0xff, 0xd8]);
+    expect((await req("/api/jobs/00000000-0000-4000-8000-00000000ffff/screenshot")).status).toBe(404);
+  });
+
   it("takes a pasted build token and refuses a malformed body", async () => {
     const submitBuildToken = vi.fn(async () => job);
     const { req } = await makeApp({ jobs: { submitBuildToken } as unknown as JobService });

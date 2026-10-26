@@ -8,7 +8,7 @@ import { PauseError, type Step } from "../types.ts";
 import { requireOutput, requireRepo } from "./shared.ts";
 
 // Preview branches are built to prove they compile, but never deployed, so they
-// can't replace production. Spike 2 records whether cf can upload previews.
+// can't replace production. cf has no command that builds and uploads a preview version yet.
 export const PREVIEW_DEPLOY_COMMAND = 'echo "Switchyard: preview branches are built but not deployed"';
 
 // What the API token behind a build token needs: what the dashboard gives the tokens it creates

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Move Vercel projects to Cloudflare Workers",
+  "license": "MIT",
   "engines": {
     "node": ">=22.18"
   },

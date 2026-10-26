@@ -2,3 +2,5 @@ node_modules/
 dist/
 .switchyard-dev/
 *.tmp
+.cloudflare/
+.claude/

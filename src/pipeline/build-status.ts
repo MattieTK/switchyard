@@ -2,7 +2,8 @@ import type { BuildInfo } from "../clients/cloudflare.ts";
 
 export type BuildState = "running" | "success" | "failure";
 
-// Status values confirmed by spike 2 (docs/spikes.md). Unknown values count as still running.
+// Workers Builds was seen reporting queued, running and stopped/success. Unknown values count as
+// still running.
 const SUCCESS = new Set(["success", "succeeded"]);
 const FAILURE = new Set(["fail", "failed", "failure", "cancelled", "canceled", "error", "terminated", "stopped"]);
 

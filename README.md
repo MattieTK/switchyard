@@ -121,4 +121,6 @@ pnpm dev             # restarts the server when its code changes
 pnpm dev:web         # rebuilds the web UI when it changes; run beside pnpm dev
 ```
 
-The design is in `docs/superpowers/specs/`. `docs/spikes.md` records what was checked against the real APIs.
+## Licence
+
+MIT. See [LICENSE](LICENSE).

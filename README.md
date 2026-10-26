@@ -82,12 +82,19 @@ The Connect page shows whether each one is installed and signed in. There you ch
 What happens when a covered step fails:
 
 1. Switchyard sends the agent what it has done so far, the failing command and the end of its output, with your variable values redacted. For the Cloudflare build, it also sends the Workers Builds log.
-2. The agent works in the project folder. `.dev.vars` is moved out of the folder while it runs, and it gets none of the production values or Switchyard's tokens, so it can't deploy or push.
+2. The agent works in the project folder, or the repository for a project in a monorepo. `.dev.vars` is moved out of the folder while it runs, and the agent isn't given the production values or Switchyard's tokens.
 3. Switchyard checks what changed with git and runs the step again. It tries at most twice per step. Changes it doesn't use are undone.
 4. A conversion fix is committed on its own before the conversion runs again. Other fixes join the migration commit.
 5. The pull request lists every change the agent made and asks you to review them.
 
-Codex runs inside its own sandbox. Claude Code's commands run in its sandbox when it's available: on macOS, and on Linux when `bubblewrap` and `socat` are installed. Otherwise they run without one, and the Connect page says so.
+The agent runs as you, so turn recovery on only with an agent you'd let work on your machine.
+
+- **Claude Code:**
+  - Permission rules keep its file tools out of Switchyard's own folder, where saved values and credentials are, and stop it committing or pushing.
+  - Its commands run in its sandbox, which applies the same limits, when that's available: on macOS, and on Linux when `bubblewrap` and `socat` are installed. Otherwise its commands run without one and can read any file you can. The Connect page says which applies.
+- **Codex:** its sandbox limits which folders it can change, but it can read any file you can. Its CLI has no way to deny reads.
+
+Switchyard reads what changed from git and decides itself whether the step passed. It never relies on the agent's own account.
 
 ### What the pull request can contain
 

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { type CommandRunner, runOrThrow } from "../exec.ts";
 import { commitIdentityArgs } from "../pipeline/steps/shared.ts";
 import { AGENT_LABELS, type AgentDriver, type Verdict } from "./types.ts";
@@ -13,6 +13,7 @@ export interface RecoverInput {
   prompt: string;
   model?: string;
   writableDirs: string[];
+  protectedPaths: string[];
   // Where .dev.vars waits, outside the project, while the agent runs.
   heldDevVarsPath: string;
   // A private folder for the temporary git index used to compare the tree before and after.
@@ -56,6 +57,22 @@ export async function restoreHeldDevVars(projectDir: string, heldPath: string): 
   else await move(heldPath, join(projectDir, ".dev.vars"));
 }
 
+// Never part of a snapshot or a commit, whatever the project's .gitignore says: before
+// conversion, a project may not ignore either yet. info/exclude belongs to Switchyard's working
+// copy, so the project's files don't change.
+const ALWAYS_EXCLUDED = [".dev.vars", "node_modules/"];
+
+async function excludeFromSnapshots(run: CommandRunner, repoDir: string): Promise<void> {
+  const path = (await runOrThrow(run, "git", ["rev-parse", "--git-path", "info/exclude"], { cwd: repoDir })).stdout.trim();
+  const file = isAbsolute(path) ? path : join(repoDir, path);
+  const current = await readFile(file, "utf8").catch(() => "");
+  const lines = new Set(current.split("\n").map((l) => l.trim()));
+  const missing = ALWAYS_EXCLUDED.filter((p) => !lines.has(p));
+  if (!missing.length) return;
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${current}${current && !current.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
+}
+
 // The whole working tree as a git tree object, built in a temporary index so the repository's
 // own index, HEAD and files are left alone. Ignored files aren't included, as they wouldn't be
 // committed either.
@@ -67,11 +84,17 @@ async function snapshot(run: CommandRunner, repoDir: string, indexFile: string):
   return (await runOrThrow(run, "git", ["write-tree"], { cwd: repoDir, env })).stdout.trim();
 }
 
+// Paths that differ between two trees. Without rename detection a move shows as a deletion and
+// an addition, so both paths are reported and undone; -z with quotePath off gives raw names.
+async function diffPaths(run: CommandRunner, repoDir: string, from: string, to: string, filter?: string): Promise<string[]> {
+  const args = ["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", ...(filter ? [`--diff-filter=${filter}`] : []), from, to];
+  return (await runOrThrow(run, "git", args, { cwd: repoDir })).stdout.split("\0").filter(Boolean);
+}
+
 // Puts the working tree back to a snapshot: files added since are removed and every other file
 // is written as it was. The repository's own index is left alone.
 async function restoreSnapshot(run: CommandRunner, repoDir: string, indexFile: string, before: string, after: string): Promise<void> {
-  const added = await runOrThrow(run, "git", ["diff", "--name-only", "--diff-filter=A", before, after], { cwd: repoDir });
-  for (const file of added.stdout.split("\n").filter(Boolean)) await rm(join(repoDir, file), { force: true });
+  for (const file of await diffPaths(run, repoDir, before, after, "A")) await rm(join(repoDir, file), { force: true });
   const env = { GIT_INDEX_FILE: indexFile };
   await runOrThrow(run, "git", ["read-tree", before], { cwd: repoDir, env });
   await runOrThrow(run, "git", ["checkout-index", "--all", "--force"], { cwd: repoDir, env });
@@ -89,7 +112,11 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
   const devVars = join(i.projectDir, ".dev.vars");
   const indexFile = join(i.scratchDir, `agent-index-${process.pid}`);
 
-  await restoreHeldDevVars(i.projectDir, i.heldDevVarsPath);
+  // Before conversion the project has no .dev.vars of Switchyard's, and convert writes it again,
+  // so one an interrupted run left behind is dropped rather than put into the clean checkout.
+  if (i.commitAs) await rm(i.heldDevVarsPath, { force: true });
+  else await restoreHeldDevVars(i.projectDir, i.heldDevVarsPath);
+  await excludeFromSnapshots(i.run, i.repoDir);
   const held = existsSync(devVars);
   if (held) await move(devVars, i.heldDevVarsPath);
 
@@ -104,6 +131,7 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
       prompt: i.prompt,
       model: i.model,
       writableDirs: i.writableDirs,
+      protectedPaths: i.protectedPaths,
       timeoutMs: i.timeoutMs,
       log: i.log,
     });
@@ -116,8 +144,7 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
   await mkdir(dirname(i.eventsPath), { recursive: true, mode: 0o700 });
   await writeFile(i.eventsPath, i.redact(result.events), { mode: 0o600 });
 
-  const diff = await runOrThrow(i.run, "git", ["diff", "--name-only", before, after], { cwd: i.repoDir });
-  const changedFiles = diff.stdout.split("\n").filter(Boolean).sort();
+  const changedFiles = (await diffPaths(i.run, i.repoDir, before, after)).sort();
   const outcome: RecoverOutcome = {
     verdict: result.verdict,
     summary: i.redact(result.summary),
@@ -147,15 +174,18 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
     return { ...outcome, error };
   }
 
+  // The commit holds exactly the tree Switchyard compared, so nothing outside the snapshot, such
+  // as .dev.vars put back after the run, can slip in. The index then follows HEAD.
   if (i.commitAs) {
-    await runOrThrow(i.run, "git", ["add", "-A"], { cwd: i.repoDir });
-    await runOrThrow(
+    const commit = await runOrThrow(
       i.run,
       "git",
       [
         ...(await commitIdentityArgs(i.run, i.repoDir)),
-        "commit",
-        "--no-verify",
+        "commit-tree",
+        after,
+        "-p",
+        "HEAD",
         "-m",
         `fix: changes by ${i.commitAs.agentLabel} so the Cloudflare conversion succeeds`,
         "-m",
@@ -163,7 +193,8 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
       ],
       { cwd: i.repoDir },
     );
-    outcome.fixCommit = (await runOrThrow(i.run, "git", ["rev-parse", "HEAD"], { cwd: i.repoDir })).stdout.trim();
+    outcome.fixCommit = commit.stdout.trim();
+    await runOrThrow(i.run, "git", ["reset", "-q", outcome.fixCommit], { cwd: i.repoDir });
   }
   return outcome;
 }

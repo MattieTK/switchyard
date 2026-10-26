@@ -7,7 +7,7 @@ import type { AgentDriver, AgentRequest, AgentStatus } from "../../src/agent/typ
 import { CommandError, createCommandRunner } from "../../src/exec.ts";
 import { BuildFailedError } from "../../src/pipeline/build-status.ts";
 import { createJobStore } from "../../src/pipeline/job-store.ts";
-import { createRecovery, failureInfo } from "../../src/pipeline/recovery.ts";
+import { createRecovery, discardInterruptedAgentWork, failureInfo } from "../../src/pipeline/recovery.ts";
 import type { Job, PipelineDeps } from "../../src/pipeline/types.ts";
 import { createRedactor } from "../../src/redact.ts";
 import { samplePlan } from "../helpers/sample-plan.ts";
@@ -80,6 +80,7 @@ async function setup(act: (req: AgentRequest) => Promise<void>, status: Partial<
     agents,
     store,
     redactor: createRedactor(),
+    configDir: join(work, "config"),
     pipeline: { run, workDir: join(work, "work") } as unknown as PipelineDeps,
     now: () => new Date("2026-10-26T01:00:00.000Z"),
   });
@@ -95,6 +96,25 @@ async function setup(act: (req: AgentRequest) => Promise<void>, status: Partial<
   });
   return { recover, request, requests, logs, repoDir, store, job };
 }
+
+describe("discardInterruptedAgentWork", () => {
+  it("sends the job back to convert, keeping the clone and any committed fix", () => {
+    const steps = ["clone", "convert", "build", "deploy"].map((id, i) => ({
+      id,
+      status: i < 2 ? "done" : i === 2 ? "failed" : "pending",
+      outputs: { x: id },
+    }));
+    const job = { id: "j", fixBase: "abc", steps } as unknown as Job;
+    const next = discardInterruptedAgentWork(job);
+    expect(next.fixBase).toBe("abc");
+    expect(next.steps.map((s) => [s.id, s.status, s.outputs])).toEqual([
+      ["clone", "done", { x: "clone" }],
+      ["convert", "pending", {}],
+      ["build", "pending", {}],
+      ["deploy", "pending", {}],
+    ]);
+  });
+});
 
 describe("createRecovery", () => {
   it("runs the agent on the converted tree and records what it changed", async () => {
@@ -119,6 +139,8 @@ describe("createRecovery", () => {
     const req = s.requests[0]!;
     expect(req.cwd).toBe(s.repoDir);
     expect(req.model).toBe("opus");
+    expect(req.protectedPaths).toHaveLength(1);
+    expect(req.protectedPaths[0]?.endsWith("/config")).toBe(true);
     expect(req.prompt).toContain("MISSING_EXPORT foo");
     expect(req.prompt).toContain("> vite build");
     expect(req.prompt).not.toContain("unrelated line");

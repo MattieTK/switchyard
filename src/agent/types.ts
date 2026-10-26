@@ -20,6 +20,9 @@ export interface AgentRequest {
   model?: string;
   // Folders outside cwd the agent may write to, such as the package manager's cache.
   writableDirs: string[];
+  // Folders and files the agent must not read: Switchyard's own data, such as saved values.
+  // Claude Code enforces this; Codex can't be told to.
+  protectedPaths: string[];
   timeoutMs: number;
   log(line: string): void;
 }

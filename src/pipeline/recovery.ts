@@ -6,7 +6,7 @@ import { AGENT_LABELS } from "../agent/types.ts";
 import { CommandError, runOrThrow } from "../exec.ts";
 import type { Redactor } from "../redact.ts";
 import { triggerVariables, type EnvValues } from "../translate/env-plan.ts";
-import type { PackageManager } from "../translate/package-manager.ts";
+import { installCommand, installEnv, type PackageManager } from "../translate/package-manager.ts";
 import { BuildFailedError } from "./build-status.ts";
 import type { JobStore } from "./job-store.ts";
 import { projectDirFor } from "./steps/shared.ts";
@@ -71,11 +71,30 @@ async function packageCacheDirs(run: PipelineDeps["run"], pm: PackageManager, cw
   }
 }
 
+export const heldDevVarsPath = (configDir: string, jobId: string) => join(configDir, "jobs", `${jobId}.dev.vars.held`);
+
+// A job whose agent run was cut short, by Switchyard stopping, has the agent's unfinished edits in
+// its working copy. Converting again from a clean checkout (or the committed fix layer) drops
+// them, so a retry never builds or pushes work nobody checked.
+export function discardInterruptedAgentWork(job: Job): Job {
+  const from = job.steps.findIndex((s) => s.id === "convert");
+  return {
+    ...job,
+    steps: job.steps.map((s, i) => (i >= from && from >= 0 ? { id: s.id, status: "pending", outputs: {} } : s)),
+  };
+}
+
+// Files whose undoing leaves node_modules out of step with them.
+const DEPENDENCY_FILES = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|\.npmrc|\.yarnrc\.yml)$/;
+
 export function createRecovery(d: {
   agents: AgentDrivers;
   store: JobStore;
   redactor: Redactor;
   pipeline: PipelineDeps;
+  // Switchyard's own folder: saved values, credentials and logs. Agents are kept out of it where
+  // they can be, and .dev.vars waits there while an agent runs.
+  configDir: string;
   now?: () => Date;
 }): (r: RecoveryRequest) => Promise<RecoveryResult> {
   const now = d.now ?? (() => new Date());
@@ -113,6 +132,7 @@ export function createRecovery(d: {
       job,
       step,
       projectDir,
+      repoDir,
       failure,
       stepLog,
       previous,
@@ -121,6 +141,11 @@ export function createRecovery(d: {
 
     log(`Agent: asking ${label} to fix this (attempt ${attempt} of ${MAX_AGENT_ATTEMPTS})`);
     const startedAt = now().toISOString();
+    // In a monorepo, installs write the root's node_modules and lockfile, so the root is writable.
+    const writableDirs = [
+      ...(projectDir !== repoDir ? [repoDir] : []),
+      ...(await packageCacheDirs(run, job.plan.packageManager, projectDir)),
+    ];
     const outcome = await recoverWithAgent({
       driver,
       run,
@@ -128,10 +153,12 @@ export function createRecovery(d: {
       projectDir,
       prompt,
       model: choice.model,
-      writableDirs: await packageCacheDirs(run, job.plan.packageManager, projectDir),
-      heldDevVarsPath: join(d.pipeline.workDir, `${job.id}.dev.vars.held`),
+      writableDirs,
+      protectedPaths: [d.configDir],
+      heldDevVarsPath: heldDevVarsPath(d.configDir, job.id),
       scratchDir: join(d.pipeline.workDir, `${job.id}.agent`),
-      eventsPath: d.store.agentEventsFile(job.id, step, attempt),
+      // Numbered across the job, so a retry's runs don't replace earlier ones.
+      eventsPath: d.store.agentEventsFile(job.id, step, (job.agentRuns?.length ?? 0) + 1),
       redact: (t) => d.redactor.redact(t),
       log,
       timeoutMs: AGENT_TIMEOUT_MS,
@@ -150,7 +177,16 @@ export function createRecovery(d: {
       ...(outcome.fixCommit ? { fixCommit: outcome.fixCommit } : {}),
       ...(outcome.error ? { error: outcome.error } : {}),
     };
-    if (outcome.error) return { recovered: false, run: record, note: outcome.error };
+    if (outcome.error) {
+      // The agent's dependency changes were undone, but what it installed is still in
+      // node_modules, where a retry would build against it. Convert installs from scratch anyway.
+      if (mode === "in-place" && outcome.changedFiles.some((f) => DEPENDENCY_FILES.test(f))) {
+        const install = installCommand(job.plan.packageManager);
+        log("Agent: reinstalling dependencies, since the agent's changes to them were undone");
+        await run(install.cmd, install.args, { cwd: projectDir, onLine: log, env: installEnv(job.plan.packageManager) });
+      }
+      return { recovered: false, run: record, note: outcome.error };
+    }
     log(`Agent: ${label} changed ${outcome.changedFiles.join(", ")}. Switchyard is running the step again.`);
     return { recovered: true, run: record };
   };

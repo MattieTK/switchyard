@@ -26,6 +26,8 @@ export interface PromptContext {
   job: Job;
   step: StepId;
   projectDir: string;
+  // The repository root, which differs from projectDir in a monorepo.
+  repoDir: string;
   failure: FailureInfo;
   // This step's earlier log lines from the job log, already redacted.
   stepLog: string[];
@@ -151,7 +153,10 @@ export function agentPrompt(c: PromptContext): string {
     "",
     "## Rules",
     "",
-    `- Change files only inside \`${c.projectDir}\`.`,
+    c.repoDir === c.projectDir
+      ? `- Change files only inside \`${c.projectDir}\`.`
+      : `- Change files only inside the repository \`${c.repoDir}\`, and outside the project folder \`${c.projectDir}\` only for workspace files such as the root package.json, lockfile or pnpm-workspace.yaml.`,
+    "- Don't read Switchyard's own folder (~/.config/switchyard or SWITCHYARD_HOME): it holds credentials and saved values.",
     "- Don't commit, push or deploy, and don't run `cf deploy`.",
     "- Don't add environment variables or secrets, and don't remove or weaken what Switchyard generated.",
     "- Make the smallest change that fixes the cause, and keep the app behaving as it did on Vercel.",

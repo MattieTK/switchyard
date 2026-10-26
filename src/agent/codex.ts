@@ -96,8 +96,7 @@ function finalText(stdout: string): string {
   return text;
 }
 
-export function codexDriver(run: CommandRunner, opts: { now?: () => number } = {}): AgentDriver {
-  const now = opts.now ?? Date.now;
+export function codexDriver(run: CommandRunner): AgentDriver {
   return {
     id: "codex",
 
@@ -111,7 +110,6 @@ export function codexDriver(run: CommandRunner, opts: { now?: () => number } = {
     },
 
     async run(req) {
-      const started = now();
       const result = await run("codex", codexArgs(req), {
         cwd: req.cwd,
         input: req.prompt,
@@ -128,7 +126,7 @@ export function codexDriver(run: CommandRunner, opts: { now?: () => number } = {
         message,
         events: result.stdout,
         exitCode: result.code,
-        timedOut: result.code !== 0 && now() - started >= req.timeoutMs,
+        timedOut: result.timedOut === true,
       };
     },
   };

@@ -5,7 +5,14 @@ import { claudeArgs, claudeDriver, claudeLogLines } from "../../src/agent/claude
 import { fakeRunner } from "../helpers/fake-runner.ts";
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, "../fixtures/agent", name), "utf8");
-const request = { cwd: "/work/project", prompt: "fix it", writableDirs: ["/cache/pnpm"], timeoutMs: 60_000 };
+const request = {
+  cwd: "/work/project",
+  prompt: "fix it",
+  writableDirs: ["/cache/pnpm"],
+  protectedPaths: ["/home/u/.config/switchyard"],
+  timeoutMs: 60_000,
+};
+const settingsOf = (args: string[]) => JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
 
 function driver(handler: Parameters<typeof fakeRunner>[0], over: { platform?: NodeJS.Platform; tools?: string[] } = {}) {
   const runner = fakeRunner(handler);
@@ -65,19 +72,34 @@ describe("claudeArgs", () => {
     expect(args).toEqual(expect.arrayContaining(["Edit", "Bash", "--strict-mcp-config", "--no-session-persistence"]));
     expect(args).not.toContain("--bare");
     expect(args).not.toContain("--model");
-    expect(args).not.toContain("--settings");
+    expect(args).not.toContain("WebFetch");
+    expect(settingsOf(args).sandbox).toBeUndefined();
   });
 
-  it("passes the model and the sandbox settings when given", () => {
+  it("keeps the agent out of Switchyard's own folder and away from commits and pushes", () => {
+    const deny = settingsOf(claudeArgs(request, false)).permissions.deny as string[];
+    expect(deny).toEqual(
+      expect.arrayContaining([
+        "Read(//home/u/.config/switchyard/**)",
+        "Edit(//home/u/.config/switchyard/**)",
+        "Bash(git push:*)",
+        "Bash(git commit:*)",
+        "WebFetch",
+      ]),
+    );
+  });
+
+  it("passes the model, the writable folders and the sandbox settings when given", () => {
     const args = claudeArgs({ ...request, model: "opus" }, true);
     expect(args[args.indexOf("--model") + 1]).toBe("opus");
-    const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
+    expect(args[args.indexOf("--add-dir") + 1]).toBe("/cache/pnpm");
+    const settings = settingsOf(args);
     expect(settings.sandbox).toMatchObject({
       enabled: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       failIfUnavailable: true,
-      filesystem: { allowWrite: ["/cache/pnpm"] },
+      filesystem: { allowWrite: ["/cache/pnpm"], denyRead: ["/home/u/.config/switchyard"] },
     });
     expect(settings.sandbox.network.allowedDomains).toContain("registry.npmjs.org");
   });
@@ -111,7 +133,7 @@ describe("claude run", () => {
     const result = await d.run({ ...request, log: (l) => logs.push(l) });
     expect(calls[0]?.cmd).toBe("claude");
     expect(calls[0]?.opts).toMatchObject({ cwd: "/work/project", input: "fix it", killGroup: true, timeoutMs: 60_000 });
-    expect(calls[0]?.args).toContain("--settings");
+    expect(settingsOf(calls[0]?.args ?? []).sandbox?.enabled).toBe(true);
     expect(logs).toContain("Agent: edited build.js");
     expect(result).toMatchObject({ verdict: "fixed", exitCode: 0, timedOut: false });
     expect(result.message).toContain("greet");
@@ -121,7 +143,16 @@ describe("claude run", () => {
   it("runs without the sandbox when it isn't available", async () => {
     const { d, calls } = driver(() => ({ code: 0, output: fixture("claude-stream.jsonl") }), { tools: ["bwrap"] });
     await d.run({ ...request, log: () => {} });
-    expect(calls[0]?.args).not.toContain("--settings");
+    expect(settingsOf(calls[0]?.args ?? []).sandbox).toBeUndefined();
+  });
+
+  it("reports a run the runner stopped for taking too long", async () => {
+    const runner = fakeRunner(() => ({ code: 143, output: "" }));
+    const d = claudeDriver(
+      async (cmd, args, opts) => ({ ...(await runner.run(cmd, args, opts)), timedOut: true }),
+      { platform: "linux", onPath: async () => true },
+    );
+    expect((await d.run({ ...request, log: () => {} })).timedOut).toBe(true);
   });
 
   it("explains a run that couldn't start", async () => {

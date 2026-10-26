@@ -12,8 +12,9 @@ export interface RunOptions {
   timeoutMs?: number;
   // Written to stdin, which is then closed. Without it, stdin is closed empty.
   input?: string;
-  // Runs the command in its own process group and stops the whole group on timeout, so
-  // processes it started itself, such as an agent's builds, don't outlive it.
+  // Runs the command in its own process group and stops the whole group when it ends, times
+  // out or Switchyard stops, so processes it started itself, such as an agent's builds,
+  // don't outlive it.
   killGroup?: boolean;
 }
 
@@ -23,6 +24,25 @@ export interface RunResult {
   output: string;
   // stdout only.
   stdout: string;
+  // Set when the command was stopped because it ran past timeoutMs.
+  timedOut?: boolean;
+}
+
+// Process groups started with killGroup that are still running, so they can be stopped when
+// Switchyard itself stops: a detached group doesn't get the terminal's Ctrl+C.
+const liveGroups = new Set<number>();
+
+function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // The group has already gone.
+  }
+}
+
+export function stopProcessGroups(): void {
+  for (const pid of liveGroups) signalGroup(pid, "SIGTERM");
+  liveGroups.clear();
 }
 
 export type CommandRunner = (cmd: string, args: readonly string[], opts?: RunOptions) => Promise<RunResult>;
@@ -100,18 +120,17 @@ export function createCommandRunner(options: { pathPrefix?: string } = {}): Comm
       ];
 
       // A negative pid signals the whole process group, which a detached child leads.
+      const group = opts.killGroup && child.pid ? child.pid : null;
+      if (group) liveGroups.add(group);
       const stop = (signal: NodeJS.Signals) => {
-        if (opts.killGroup && child.pid) {
-          try {
-            process.kill(-child.pid, signal);
-          } catch {
-            // The group has already gone.
-          }
-        } else child.kill(signal);
+        if (group) signalGroup(group, signal);
+        else child.kill(signal);
       };
+      let timedOut = false;
       let forceTimer: NodeJS.Timeout | undefined;
       const timer = opts.timeoutMs
         ? setTimeout(() => {
+            timedOut = true;
             stop("SIGTERM");
             // Processes that ignore SIGTERM get SIGKILL a little later.
             forceTimer = setTimeout(() => stop("SIGKILL"), 5000);
@@ -128,11 +147,18 @@ export function createCommandRunner(options: { pathPrefix?: string } = {}): Comm
       });
       child.on("close", (code, signal) => {
         clearTimeout(timer);
+        clearTimeout(forceTimer);
+        // Anything the command left running in its group, such as a dev server, stops with it.
+        if (group) {
+          signalGroup(group, "SIGTERM");
+          liveGroups.delete(group);
+        }
         for (const flush of flushes) flush();
         resolve({
           code: code ?? (signal ? 128 : 1),
           output: output.replace(ANSI, ""),
           stdout: stdout.replace(ANSI, ""),
+          ...(timedOut ? { timedOut } : {}),
         });
       });
     });

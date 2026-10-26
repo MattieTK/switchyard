@@ -151,7 +151,8 @@ export function RecoveryCard({
           />
           <p className="note">
             Switchyard sends the agent what it has done and the redacted error output, never your environment values. Its changes
-            go into the pull request, listed for review.
+            go into the pull request, listed for review. The agent runs as you: Codex, and Claude without its sandbox, can read any
+            file you can.
           </p>
           {agent !== null && usable.length > 1 && (
             <RadioGroup className="radio-group" aria-label="Agent" value={agent} onValueChange={(v) => onChange(v as AgentId)}>

@@ -443,7 +443,9 @@ export const buildStep: Step = {
     const script = ctx.output("convert").buildScript;
     const { cmd, args } = script ? runScriptCommand(pm, script) : execCommand(pm, "cf", ["build"]);
     const options = { cwd: dir, onLine: ctx.log, env: { ...productionBuildEnv(ctx), CI: "1" } };
-    const warnings: string[] = [];
+    // Warnings are saved as soon as a repair changes the project, and ones kept from before an
+    // agent recovery stay, so the pull request lists the repair even when this run fails.
+    const warnings = JSON.parse(ctx.outputs.warnings ?? "[]") as string[];
     for (let repairs = 0; ; repairs++) {
       const result = await ctx.deps.run(cmd, args, options);
       if (result.code === 0) break;
@@ -451,7 +453,7 @@ export const buildStep: Step = {
       if (!added.length) throw new CommandError(cmd, args, result);
       for (const w of added) ctx.log(`Warning: ${w}`);
       warnings.push(...added);
+      ctx.outputs.warnings = JSON.stringify(warnings);
     }
-    if (warnings.length) ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };

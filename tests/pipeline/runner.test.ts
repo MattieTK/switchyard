@@ -276,6 +276,26 @@ describe("runJob with agent recovery", () => {
     expect(done.agentRuns?.[0]?.rerunPassed).toBe(true);
   });
 
+  it("keeps the warnings of steps it runs again, so the pull request still lists their repairs", async () => {
+    const { deps, job, answers } = await withAgent();
+    answers.push({ recovered: true, run: agentRun("build", 1) });
+    let runs = 0;
+    const done = await runJob(
+      job.id,
+      [
+        step("build", async (ctx) => {
+          if (++runs === 1) {
+            ctx.outputs.warnings = JSON.stringify(["Switchyard added lodash@^4.17.21"]);
+            ctx.outputs.other = "x";
+            throw failing();
+          }
+        }),
+      ],
+      deps,
+    );
+    expect(done.steps.find((s) => s.id === "build")?.outputs).toEqual({ warnings: '["Switchyard added lodash@^4.17.21"]' });
+  });
+
   it("keeps the fix commit for the conversion", async () => {
     const { deps, job, answers } = await withAgent();
     answers.push({ recovered: true, run: agentRun("convert", 1, { fixCommit: "abc123" }) });

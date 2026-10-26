@@ -36,6 +36,7 @@ function context(over: Partial<PromptContext> = {}): PromptContext {
     job: job(),
     step: "build",
     projectDir: "/work/job",
+    repoDir: "/work/job",
     failure: { command: "pnpm run build:cloudflare", exitCode: 1, output: "Error: MISSING_EXPORT foo" },
     stepLog: ["> vite build", "transforming..."],
     previous: [],
@@ -102,6 +103,12 @@ describe("agentPrompt", () => {
     expect(text).toContain("vite.config.ts");
     expect(text).toContain("aliased node-fetch");
     expect(text).toContain("still failing: n.call");
+  });
+
+  it("lets a monorepo agent change workspace files at the repository root", () => {
+    const text = agentPrompt(context({ projectDir: "/work/job/apps/web", repoDir: "/work/job" }));
+    expect(text).toContain("inside the repository `/work/job`");
+    expect(text).toContain("pnpm-workspace.yaml");
   });
 
   it("ends with the rules and the verdict format", () => {

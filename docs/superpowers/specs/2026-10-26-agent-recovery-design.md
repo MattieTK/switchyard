@@ -123,19 +123,19 @@ interface AgentDriver {
 }
 ```
 
-Both use the existing `CommandRunner`, which gains `input` (written to stdin) and `killGroup` (spawn in a new process group and signal the whole group on timeout).
+Both use the existing `CommandRunner`, which gains `input` (written to stdin), `killGroup` (spawn in a new process group, signal the whole group when the command ends or times out, and when Switchyard stops through `stopProcessGroups`) and a `timedOut` flag on the result.
 
 **Claude**, in the project folder:
 
 ```
 claude -p --output-format stream-json --verbose
   --permission-mode dontAsk
-  --allowedTools Read Edit Write Glob Grep Bash WebFetch
+  --allowedTools Read Edit Write Glob Grep Bash
   --strict-mcp-config --no-session-persistence --max-turns 80
-  [--model <model>] [--settings <sandbox JSON>]
+  [--model <model>] [--add-dir <writable folder>…] --settings <JSON>
 ```
 
-`--bare` is never used: it limits Anthropic auth to `ANTHROPIC_API_KEY`. When the sandbox is available, `--settings` turns it on with `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` and `failIfUnavailable: true`, the package manager's cache as an extra writable folder, and network limited to the npm and Yarn registries and GitHub.
+`--bare` is never used: it limits Anthropic auth to `ANTHROPIC_API_KEY`. `WebFetch` isn't allowed, since the sandbox's network list doesn't cover it. `--settings` always carries `permissions.deny` rules: `Read` and `Edit` of Switchyard's config folder, `Bash(git commit:*)`, `Bash(git push:*)` and `WebFetch`. When the sandbox is available it also turns that on with `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` and `failIfUnavailable: true`, the writable folders (the package manager's cache, and the repository root in a monorepo), `denyRead` for the config folder, and network limited to the npm and Yarn registries and GitHub.
 
 **Codex**:
 
@@ -152,10 +152,12 @@ Each driver maps its events to `Agent:` log lines: edits as `Agent: edited <path
 
 ## Secrets
 
-- `.dev.vars` is held outside the project for the length of each run.
+- `.dev.vars` is held in the config folder's `jobs/` for the length of each run. In the fix layer, a held file left by a crash is deleted, not restored, and `.dev.vars` and `node_modules/` are added to the clone's `info/exclude`, so neither can enter a snapshot or a commit. The fix commit is made from the exact `after` tree with `git commit-tree`.
 - `productionBuildEnv` values are never passed; the prompt lists the names only.
-- Switchyard's Cloudflare and GitHub tokens are passed per command and are never in `process.env`, so an agent can't deploy or push.
-- Every piece of output in the prompt goes through the job's `Redactor`.
+- Switchyard's Cloudflare and GitHub tokens are passed per command and are never in `process.env`.
+- Every piece of output in the prompt, the saved events, the PR and the commit message goes through the job's `Redactor`.
+- What Switchyard can't promise: the agent runs as the user. Claude's file tools are denied the config folder (saved values, credentials) and commits and pushes; with its sandbox, its commands are too. Without the sandbox, its commands can read any file the user can, and Codex can always read any file the user can, since its CLI can't deny reads. The README and plan screen say so.
+- If Switchyard stops during an agent run, it stops the agent's process group, and at the next start a job with a held `.dev.vars` goes back to convert, which drops the unfinished edits.
 
 ## Pull request and job page
 

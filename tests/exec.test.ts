@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommandError, createCommandRunner, runOrThrow } from "../src/exec.ts";
+import { CommandError, createCommandRunner, runOrThrow, stopProcessGroups } from "../src/exec.ts";
 
 const run = createCommandRunner();
 const node = process.execPath;
@@ -99,10 +99,32 @@ describe("createCommandRunner", () => {
     const started = Date.now();
     const r = await run(node, ["-e", script], { timeoutMs: 300, killGroup: true });
     expect(Date.now() - started).toBeLessThan(5000);
+    expect(r.timedOut).toBe(true);
     const grandchild = Number(r.stdout.trim());
     // Signal 0 only checks the process exists; give the kernel a moment to reap it.
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(() => process.kill(grandchild, 0)).toThrow();
+  });
+
+  it("stops what a killGroup command left running when it exits normally", async () => {
+    const script =
+      "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });" +
+      "console.log(c.pid); c.unref();";
+    const r = await run(node, ["-e", script], { killGroup: true });
+    expect(r.code).toBe(0);
+    expect(r.timedOut).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(Number(r.stdout.trim()), 0)).toThrow();
+  });
+
+  it("stops running process groups when Switchyard stops", async () => {
+    const started = Date.now();
+    const pending = run(node, ["-e", "setTimeout(() => {}, 30000)"], { killGroup: true });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    stopProcessGroups();
+    const r = await pending;
+    expect(r.code).not.toBe(0);
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 });
 

@@ -115,11 +115,15 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
         const recovery = await recoverStep(step.id, e, error, log);
         if (recovery.rerunFrom) {
           // The steps from the re-run point to this one start again; their outputs described the
-          // tree before the agent changed it. Later steps never ran, so they're still pending.
+          // tree before the agent changed it. Their warnings stay: a repair such as an added
+          // package isn't needed again on the re-run, but the pull request must still list it.
+          // Later steps never ran, so they're still pending.
           const from = steps.findIndex((s) => s.id === recovery.rerunFrom);
           for (const s of steps.slice(from, index + 1)) {
             const st = job.steps.find((x) => x.id === s.id);
-            if (st) Object.assign(st, { status: "pending", outputs: {}, error: undefined, pause: undefined });
+            if (!st) continue;
+            const outputs = st.outputs.warnings ? { warnings: st.outputs.warnings } : {};
+            Object.assign(st, { status: "pending", outputs, error: undefined, pause: undefined });
           }
           await publish();
           index = from - 1;

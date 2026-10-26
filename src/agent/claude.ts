@@ -54,7 +54,13 @@ async function sandboxStatus(
 
 // --bare is never passed: it limits Anthropic sign-in to ANTHROPIC_API_KEY, and Claude must use
 // the user's own sign-in. dontAsk refuses anything not allowed instead of waiting for an answer.
-export function claudeArgs(req: Pick<AgentRequest, "model" | "writableDirs">, sandbox: boolean): string[] {
+// Claude Code writes an absolute path in a permission rule with a leading //.
+const absoluteRule = (tool: string, path: string) => `${tool}(/${path.replace(/\/+$/, "")}/**)`;
+
+// WebFetch isn't offered: the sandbox's network list doesn't cover it, so it could send what the
+// agent reads anywhere. Deny rules keep the file tools out of Switchyard's own folders, and stop
+// commits and pushes, which are Switchyard's to make.
+export function claudeArgs(req: Pick<AgentRequest, "model" | "writableDirs" | "protectedPaths">, sandbox: boolean): string[] {
   const args = [
     "-p",
     "--output-format",
@@ -69,27 +75,38 @@ export function claudeArgs(req: Pick<AgentRequest, "model" | "writableDirs">, sa
     "Glob",
     "Grep",
     "Bash",
-    "WebFetch",
     "--strict-mcp-config",
     "--no-session-persistence",
     "--max-turns",
     "80",
   ];
   if (req.model) args.push("--model", req.model);
-  if (sandbox) {
+  for (const dir of req.writableDirs) args.push("--add-dir", dir);
+  const settings = {
+    permissions: {
+      deny: [
+        ...req.protectedPaths.flatMap((p) => [absoluteRule("Read", p), absoluteRule("Edit", p)]),
+        "Bash(git push:*)",
+        "Bash(git commit:*)",
+        "WebFetch",
+      ],
+    },
     // failIfUnavailable makes claude stop instead of quietly running commands unsandboxed.
-    const settings = {
-      sandbox: {
-        enabled: true,
-        autoAllowBashIfSandboxed: true,
-        allowUnsandboxedCommands: false,
-        failIfUnavailable: true,
-        filesystem: { allowWrite: req.writableDirs },
-        network: { allowedDomains: SANDBOX_DOMAINS },
-      },
-    };
-    args.push("--settings", JSON.stringify(settings));
-  }
+    // denyRead also covers commands, such as cat, which the file tools' rules don't.
+    ...(sandbox
+      ? {
+          sandbox: {
+            enabled: true,
+            autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false,
+            failIfUnavailable: true,
+            filesystem: { allowWrite: req.writableDirs, denyRead: req.protectedPaths },
+            network: { allowedDomains: SANDBOX_DOMAINS },
+          },
+        }
+      : {}),
+  };
+  args.push("--settings", JSON.stringify(settings));
   return args;
 }
 
@@ -131,11 +148,10 @@ function resultText(stdout: string): string {
 
 export function claudeDriver(
   run: CommandRunner,
-  opts: { platform?: NodeJS.Platform; onPath?: (cmd: string) => Promise<boolean>; now?: () => number } = {},
+  opts: { platform?: NodeJS.Platform; onPath?: (cmd: string) => Promise<boolean> } = {},
 ): AgentDriver {
   const platform = opts.platform ?? process.platform;
   const onPath = opts.onPath ?? ((cmd: string) => defaultOnPath(cmd));
-  const now = opts.now ?? Date.now;
 
   return {
     id: "claude",
@@ -158,7 +174,6 @@ export function claudeDriver(
 
     async run(req) {
       const { available } = await sandboxStatus(platform, onPath);
-      const started = now();
       const result = await run("claude", claudeArgs(req, available), {
         cwd: req.cwd,
         input: req.prompt,
@@ -175,7 +190,7 @@ export function claudeDriver(
         message,
         events: result.stdout,
         exitCode: result.code,
-        timedOut: result.code !== 0 && now() - started >= req.timeoutMs,
+        timedOut: result.timedOut === true,
       };
     },
   };

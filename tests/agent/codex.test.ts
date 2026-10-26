@@ -5,7 +5,7 @@ import { codexArgs, codexDriver, codexLogLines, unwrapShell } from "../../src/ag
 import { fakeRunner } from "../helpers/fake-runner.ts";
 
 const fixture = readFileSync(join(import.meta.dirname, "../fixtures/agent/codex-stream.jsonl"), "utf8");
-const request = { cwd: "/work/project", prompt: "fix it", writableDirs: ["/cache/pnpm"], timeoutMs: 60_000 };
+const request = { cwd: "/work/project", prompt: "fix it", writableDirs: ["/cache/pnpm"], protectedPaths: [], timeoutMs: 60_000 };
 
 describe("codex status", () => {
   const status = (code: number, output: string) => codexDriver(fakeRunner(() => ({ code, output, stdout: "" })).run).status();

@@ -59,6 +59,7 @@ function input(r: { repoDir: string; work: string }, d: AgentDriver, over: Parti
     projectDir: r.repoDir,
     prompt: "fix it",
     writableDirs: [],
+    protectedPaths: ["/config/switchyard"],
     heldDevVarsPath: join(r.work, "job.dev.vars.held"),
     scratchDir: r.work,
     eventsPath: join(r.work, "job.agent-build-1.jsonl"),
@@ -174,6 +175,42 @@ describe("recoverWithAgent", () => {
     });
     await recoverWithAgent(input(r, d));
     expect(await readFile(join(r.work, "job.agent-build-1.jsonl"), "utf8")).toBe('{"text":"SECRET=***"}\n');
+  });
+
+  it("undoes a rename and lists both paths, including names outside ASCII", async () => {
+    const r = await repo();
+    const d = driver(async (req) => {
+      const { rename } = await import("node:fs/promises");
+      await rename(join(req.cwd, "build.js"), join(req.cwd, "build.cjs"));
+      await writeFile(join(req.cwd, "café.tsx"), "x\n");
+      return result({ verdict: "cannot-fix", summary: "gave up" });
+    });
+    const outcome = await recoverWithAgent(input(r, d));
+    expect(outcome.changedFiles).toEqual(["build.cjs", "build.js", "café.tsx"]);
+    expect(existsSync(join(r.repoDir, "build.cjs"))).toBe(false);
+    expect(existsSync(join(r.repoDir, "café.tsx"))).toBe(false);
+    expect(await readFile(join(r.repoDir, "build.js"), "utf8")).toBe("require('./missing')\n");
+  });
+
+  it("keeps .dev.vars and node_modules out of the fix commit when the project doesn't ignore them yet", async () => {
+    const r = await repo();
+    await writeFile(join(r.repoDir, ".gitignore"), "");
+    await git(r.repoDir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "stop ignoring");
+    await git(r.repoDir, "reset", "--hard", "-q");
+    await git(r.repoDir, "clean", "-fdxq");
+    // An interrupted run on another step left development values outside the project.
+    await writeFile(join(r.work, "job.dev.vars.held"), "SECRET=dev-value\n");
+    const d = driver(async (req) => {
+      await mkdir(join(req.cwd, "node_modules", "left-pad"), { recursive: true });
+      await writeFile(join(req.cwd, "node_modules", "left-pad", "index.js"), "x\n");
+      await writeFile(join(req.cwd, ".npmrc"), "legacy-peer-deps=true\n");
+    });
+    const outcome = await recoverWithAgent(input(r, d, { commitAs: { agentLabel: "Claude" } }));
+    expect(outcome.changedFiles).toEqual([".npmrc"]);
+    const committed = (await git(r.repoDir, "show", "--name-only", "--format=", "HEAD")).stdout.trim().split("\n");
+    expect(committed).toEqual([".npmrc"]);
+    expect(existsSync(join(r.repoDir, ".dev.vars"))).toBe(false);
+    expect(existsSync(join(r.work, "job.dev.vars.held"))).toBe(false);
   });
 
   it("works in a project folder below the repository root", async () => {

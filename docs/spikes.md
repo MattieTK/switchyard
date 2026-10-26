@@ -99,3 +99,8 @@ Findings:
 - Both monorepo builds were declined for the same accurate reason: the harness ran them from the repository root, where Switchyard would use the Vercel project's root folder (`apps/web`). The agent named the cause instead of forcing a change.
 - Turned-down work was undone: after the declined builds, `git status` showed only the conversion's own changes.
 - Two fixes look general enough to become deterministic rules in Switchyard: a Vite alias for imports that rely on tsconfig's `baseUrl`, and pnpm's workspace-root check for `vinext init` in workspaces.
+
+After the branch review's fixes (commit 7a76316), two runs were repeated on the fixed code, with Claude's new permission rules in place:
+
+- nick-vogel/nlv_codes_example with Claude: the same `src` alias fix, no permission denials, and the build passed on the re-run in 1.3 min.
+- zeon-studio/open-remark with Codex: Codex arrived at the same fix as Claude independently (moving the design-token import before the CSS rules), and the build passed on the re-run in 1.4 min.

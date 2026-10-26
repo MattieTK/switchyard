@@ -81,3 +81,21 @@ Two notes on `cf` 1.0.0-beta.20 from this run: list-valued flags can't express a
 - **Claude refuses writes under `~/.claude`.** The first Claude run sat in `~/.claude/jobs/…`: it found the cause, but `dontAsk` denied `Edit`, `Write` and `Bash(sed -i …)` despite `--allowedTools`, and it ended with a success `result` asking for permission. Working copies in `~/.cache/switchyard/work` aren't affected. A run that ends with only `permission_denials` and no changes is reported as having made no changes.
 - **Claude's sandbox fails loudly with `failIfUnavailable`.** With `--settings '{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true}}'` on WSL2 with `bwrap` but no `socat`, `claude` exited 1 within a second, printing one `result` event (`subtype: "error_during_execution"`, `errors: ["Sandbox required but unavailable: … socat not installed …"]`) and spending no tokens.
 - The user's own configuration loads into both: Claude ran the user's SessionStart hooks and used their output style; Codex started the user's MCP servers and logged an auth error for one of them on stderr, without affecting the run.
+
+## Agent recovery on real projects (2026-10-26)
+
+Switchyard's real `runJob` ran convert and build on public repositories that failed at one of those steps in the 2026-10-25 run, with recovery on (`~/.cache/switchyard-realworld/agent-run.ts`; results in `agent-results.tsv` there). Each agent used its CLI's default model. Claude ran without its sandbox, since this machine has no `socat`.
+
+| Project | Agent | Failure before | What happened | Result |
+| --- | --- | --- | --- | --- |
+| zeon-studio/open-remark | Claude | build: Tailwind 4 `Cannot apply unknown utility class bg-muted` | Moved the `design-tokens.css` import to directly after `@import "tailwindcss"` in `app/globals.css`, since Vite drops `@import`s that follow other statements; checked the built CSS | Build passed on the re-run, 2.5 min |
+| nick-vogel/nlv_codes_example | Claude | build: Vite couldn't resolve `src/components/…` in Payload's admin import map | Added a `src` → `./src` alias in `vite.config.ts`, matching tsconfig's `baseUrl` | Build passed on the re-run, 1.3 min |
+| tianpeng-dev/nowcoding | Codex | convert: `vinext init`'s `pnpm add` stopped with `ERR_PNPM_ADDING_TO_ROOT` | Added `.npmrc` with pnpm's workspace-root setting, committed as the fix layer; convert passed. For the build it tried `pnpm-workspace.yaml`, then answered `cannot fix`: `cf build` won't build a workspace root | Convert recovered; build declined with the right reason |
+| aaryansinha16/devovia | Codex | convert: `@next/codemod upgrade` couldn't detect React at the workspace root | Attempt 1 added React to the root `package.json` (fix commit 1), which got the codemod through; attempt 2 fixed the same `vinext init` root refusal with `.npmrc` (fix commit 2); convert passed. Build declined as for nowcoding | Convert recovered over two stacked fix commits; build declined |
+| jimmcq/mars-weather-dashboard | Codex | convert under Node 20 | Passed without the agent: the earlier failure came from the Node version of that run | No agent run |
+
+Findings:
+
+- Both monorepo builds were declined for the same accurate reason: the harness ran them from the repository root, where Switchyard would use the Vercel project's root folder (`apps/web`). The agent named the cause instead of forcing a change.
+- Turned-down work was undone: after the declined builds, `git status` showed only the conversion's own changes.
+- Two fixes look general enough to become deterministic rules in Switchyard: a Vite alias for imports that rely on tsconfig's `baseUrl`, and pnpm's workspace-root check for `vinext init` in workspaces.

@@ -87,10 +87,11 @@ describe("convertStep", () => {
     expect(calls.map((c) => c.args)).toEqual([
       ["reset", "--hard", "origin/main"],
       ["clean", "-fdx"],
+      ["ls-files", "-z", "--", "*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs"],
       ["ignored-builds"],
       ["ls-files", "--", ".dev.vars"],
     ]);
-    expect(calls[3]?.opts?.cwd).toBe(repoDir);
+    expect(calls[4]?.opts?.cwd).toBe(repoDir);
     const config = await readFile(join(repoDir, "cloudflare.config.ts"), "utf8");
     expect(config).toContain('name: "shop"');
     expect(config).toContain("API_KEY: bindings.secret()");
@@ -390,6 +391,31 @@ describe("convertStep", () => {
       // The project had sharp before, and Yarn ran its build script on Vercel, so it stays allowed.
       expect(await readFile(join(repoDir, "pnpm-workspace.yaml"), "utf8")).toContain("  sharp: true\n");
     });
+  });
+
+  it("replaces fetch polyfill imports in the project's tracked source files with the built-in fetch", async () => {
+    const repoDir = await makeTempDir();
+    await mkdir(join(repoDir, "pages"), { recursive: true });
+    await writeFile(join(repoDir, "pages/index.js"), 'import fetch from "isomorphic-fetch";\nexport const a = () => fetch("/x");\n');
+    await writeFile(join(repoDir, "pages/other.js"), 'import fetch, { FetchError } from "node-fetch";\nexport { fetch, FetchError };\n');
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG);
+        return { baseEntrypoint: "x", warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { run } = fakeRunner((_cmd, args) =>
+      args[0] === "ls-files" && args.includes("-z")
+        ? { code: 0, output: "pages/index.js\0pages/other.js\0README.md\0" }
+        : { code: args[0] === "show" ? 128 : 0, output: "" },
+    );
+    const { ctx } = makeContext({ deps: { run, adapter: () => adapter }, outputs: { clone: { dir: repoDir } } });
+    await convertStep.run(ctx);
+    expect(await readFile(join(repoDir, "pages/index.js"), "utf8")).toBe('export const a = () => fetch("/x");\n');
+    expect(await readFile(join(repoDir, "pages/other.js"), "utf8")).toContain('from "node-fetch"');
+    const warnings = JSON.parse(ctx.outputs.warnings ?? "[]") as string[];
+    expect(warnings).toContainEqual(expect.stringContaining("Switchyard replaced the imports of isomorphic-fetch in pages/index.js with the fetch built into Workers"));
+    expect(warnings).toContainEqual(expect.stringContaining("pages/other.js still imports node-fetch"));
   });
 
   it("removes lockfiles of package managers the project doesn't use", async () => {

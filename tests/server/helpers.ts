@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import type { AgentDrivers } from "../../src/agent/drivers.ts";
+import { createPreferencesStore } from "../../src/agent/preferences.ts";
 import { createPendingAuthStore } from "../../src/auth/cloudflare-oauth.ts";
 import { createCredentialStore } from "../../src/auth/store.ts";
 import type { ClientFactory } from "../../src/clients/factory.ts";
@@ -20,6 +22,9 @@ export async function makeApp(over: Partial<AppDeps> = {}) {
     fetch: fakeFetch([]).fetch,
     clients: {} as ClientFactory,
     jobs: {} as JobService,
+    agents: {} as AgentDrivers,
+    preferences: createPreferencesStore(join(dir, "preferences.json")),
+    modelSuggestions: async () => ({ claude: [], codex: [] }),
     oauth: {
       clientId: "cid",
       redirectUri: "http://localhost:4417/auth/cloudflare/callback",

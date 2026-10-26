@@ -7,6 +7,7 @@ describe("resolvePaths", () => {
     expect(p.configDir).toBe("/home/u/.config/switchyard");
     expect(p.cacheDir).toBe("/home/u/.cache/switchyard");
     expect(p.credentialsFile).toBe("/home/u/.config/switchyard/credentials.json");
+    expect(p.preferencesFile).toBe("/home/u/.config/switchyard/preferences.json");
     expect(p.jobsDir).toBe("/home/u/.config/switchyard/jobs");
     expect(p.workDir).toBe("/home/u/.cache/switchyard/work");
     expect(p.binDir).toBe("/home/u/.cache/switchyard/bin");

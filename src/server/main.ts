@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import open from "open";
 import { adapterById } from "../adapters/registry.ts";
+import { createAgentDrivers } from "../agent/drivers.ts";
+import { modelSuggestions } from "../agent/models.ts";
+import { createPreferencesStore } from "../agent/preferences.ts";
 import { createCloudflareTokenProvider, createPendingAuthStore } from "../auth/cloudflare-oauth.ts";
 import { randomToken } from "../auth/pkce.ts";
 import { createCredentialStore } from "../auth/store.ts";
@@ -30,6 +33,8 @@ const cloudflareToken = createCloudflareTokenProvider({ store, fetch, clientId: 
 const clients = createClientFactory({ store, fetch, run, cloudflareToken });
 const jobStore = createJobStore(paths.jobsDir);
 const events = createJobEvents();
+const agents = createAgentDrivers(run);
+const preferences = createPreferencesStore(paths.preferencesFile);
 
 const pipeline: PipelineDeps = {
   run,
@@ -68,6 +73,9 @@ const app = createApp({
   fetch,
   clients,
   jobs,
+  agents,
+  preferences,
+  modelSuggestions: () => modelSuggestions(),
   oauth: {
     clientId: CLOUDFLARE_CLIENT_ID,
     redirectUri: CLOUDFLARE_REDIRECT_URI,

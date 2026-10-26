@@ -5,6 +5,8 @@ export interface Paths {
   configDir: string;
   cacheDir: string;
   credentialsFile: string;
+  // Choices that aren't secret, such as the preferred agent.
+  preferencesFile: string;
   jobsDir: string;
   workDir: string;
   // Package manager shims Switchyard sets up through corepack.
@@ -26,6 +28,7 @@ export function resolvePaths(
     configDir,
     cacheDir,
     credentialsFile: join(configDir, "credentials.json"),
+    preferencesFile: join(configDir, "preferences.json"),
     jobsDir: join(configDir, "jobs"),
     workDir: join(cacheDir, "work"),
     binDir: join(cacheDir, "bin"),

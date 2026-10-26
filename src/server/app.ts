@@ -3,6 +3,9 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
+import type { AgentDrivers } from "../agent/drivers.ts";
+import type { PreferencesStore } from "../agent/preferences.ts";
+import type { AgentId } from "../agent/types.ts";
 import type { PendingAuthStore } from "../auth/cloudflare-oauth.ts";
 import type { CredentialStore } from "../auth/store.ts";
 import type { ClientFactory } from "../clients/factory.ts";
@@ -10,6 +13,7 @@ import { UserInputError } from "../errors.ts";
 import { ApiError, type FetchFn } from "../http.ts";
 import type { JobService } from "../pipeline/service.ts";
 import { hostGuard, tokenGuard } from "./guard.ts";
+import { agentRoutes } from "./routes/agents.ts";
 import { connectRoutes } from "./routes/connect.ts";
 import { jobRoutes } from "./routes/jobs.ts";
 
@@ -21,6 +25,9 @@ export interface AppDeps {
   fetch: FetchFn;
   clients: ClientFactory;
   jobs: JobService;
+  agents: AgentDrivers;
+  preferences: PreferencesStore;
+  modelSuggestions(): Promise<Record<AgentId, string[]>>;
   oauth: { clientId: string; redirectUri: string; scopes: readonly string[]; pending: PendingAuthStore };
 }
 
@@ -30,6 +37,7 @@ export function createApp(d: AppDeps): Hono {
   app.use("/api/*", tokenGuard(d.launchToken));
   app.route("/", connectRoutes(d));
   app.route("/api", jobRoutes(d));
+  app.route("/api", agentRoutes(d));
 
   if (d.staticDir) {
     const root = relative(process.cwd(), d.staticDir) || ".";

@@ -21,6 +21,7 @@ export interface GitHubClient {
   listDir(owner: string, repo: string, path: string, ref: string): Promise<string[] | null>;
   findOpenPr(owner: string, repo: string, branch: string): Promise<PullRequest | null>;
   createPr(owner: string, repo: string, p: { title: string; head: string; base: string; body: string }): Promise<PullRequest>;
+  updatePrBody(owner: string, repo: string, number: number, body: string): Promise<void>;
 }
 
 const encodePath = (path: string) => path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
@@ -90,6 +91,9 @@ export function createGitHubClient(o: { fetch: FetchFn; token: () => Promise<str
         body: p,
       });
       return { url: pr.html_url, number: pr.number };
+    },
+    async updatePrBody(owner, repo, number, body) {
+      await http.request(`${repoPath(owner, repo)}/pulls/${number}`, { method: "PATCH", body: { body } });
     },
   };
 }

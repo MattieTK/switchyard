@@ -236,4 +236,40 @@ describe("prStep", () => {
     expect(input.body).toContain("- [ ] w1");
     expect(input.body).toContain("- [ ] w2");
   });
+
+  it("updates an open PR's description when an agent changed files, so the review lists them", async () => {
+    const updatePrBody = vi.fn(async () => {});
+    const gh = {
+      findOpenPr: async () => ({ url: "https://github.com/acme/shop/pull/3", number: 3 }),
+      createPr: vi.fn(),
+      updatePrBody,
+    } as unknown as GitHubClient;
+    const { ctx, job } = makeContext({ deps: { github: async () => gh } });
+    job.agentRuns = [
+      {
+        step: "build",
+        agent: "claude",
+        attempt: 1,
+        startedAt: "2026-10-26T00:00:00.000Z",
+        verdict: "fixed",
+        summary: "added the missing export",
+        changedFiles: ["lib/a.ts"],
+      },
+    ];
+    await prStep.run(ctx);
+    const [owner, repo, number, body] = updatePrBody.mock.calls[0] as unknown as [string, string, number, string];
+    expect([owner, repo, number]).toEqual(["acme", "shop", 3]);
+    expect(body).toContain("## Changes made by Claude");
+  });
+
+  it("leaves an open PR's description alone without agent changes", async () => {
+    const updatePrBody = vi.fn();
+    const gh = {
+      findOpenPr: async () => ({ url: "https://github.com/acme/shop/pull/3", number: 3 }),
+      updatePrBody,
+    } as unknown as GitHubClient;
+    const { ctx } = makeContext({ deps: { github: async () => gh } });
+    await prStep.run(ctx);
+    expect(updatePrBody).not.toHaveBeenCalled();
+  });
 });

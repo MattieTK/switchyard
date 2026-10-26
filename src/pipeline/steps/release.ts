@@ -1,7 +1,8 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gitAuthEnv } from "../../auth/github.ts";
-import { prBody } from "../../codegen/pr-body.ts";
+import { AGENT_LABELS } from "../../agent/types.ts";
+import { keptAgentRuns, prBody } from "../../codegen/pr-body.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
@@ -114,24 +115,33 @@ export const prStep: Step = {
     const warnings = (["convert", "build"] as const).flatMap(
       (step) => JSON.parse(ctx.output(step).warnings ?? "[]") as string[],
     );
+    const body = prBody({
+      projectName: plan.projectName,
+      productionBranch: repo.productionBranch,
+      workersDevUrl: ctx.output("deploy").workersDevUrl,
+      hasCrons: plan.vercelJson.crons.length > 0,
+      skippedEnv: plan.env.entries.flatMap((e) => (e.skipReason ? [{ key: e.key, reason: e.skipReason }] : [])),
+      manual: plan.vercelJson.manual,
+      features: plan.features,
+      storage: plan.storage,
+      warnings,
+      agentRuns: ctx.job.agentRuns,
+    });
     const pr =
       existing ??
       (await gh.createPr(repo.owner, repo.name, {
         title: `Move ${plan.projectName} from Vercel to Cloudflare Workers`,
         head: MIGRATION_BRANCH,
         base: repo.productionBranch,
-        body: prBody({
-          projectName: plan.projectName,
-          productionBranch: repo.productionBranch,
-          workersDevUrl: ctx.output("deploy").workersDevUrl,
-          hasCrons: plan.vercelJson.crons.length > 0,
-          skippedEnv: plan.env.entries.flatMap((e) => (e.skipReason ? [{ key: e.key, reason: e.skipReason }] : [])),
-          manual: plan.vercelJson.manual,
-          features: plan.features,
-          storage: plan.storage,
-          warnings,
-        }),
+        body,
       }));
+    // An open PR keeps the description the user may have edited, unless an agent changed the
+    // branch: reviewers must see those changes listed.
+    const [agentRun] = keptAgentRuns(ctx.job.agentRuns);
+    if (existing && agentRun) {
+      await gh.updatePrBody(repo.owner, repo.name, existing.number, body);
+      ctx.log(`Listed ${AGENT_LABELS[agentRun.agent]}'s changes in the pull request description`);
+    }
     ctx.outputs.prUrl = pr.url;
     ctx.log(existing ? `Using the open pull request ${pr.url}` : `Opened ${pr.url}`);
   },

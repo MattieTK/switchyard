@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cronEntrySource } from "../../src/codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../src/codegen/gitignore.ts";
 import { prBody } from "../../src/codegen/pr-body.ts";
+import type { AgentRun } from "../../src/pipeline/types.ts";
 
 describe("cronEntrySource", () => {
   const src = cronEntrySource("vinext/server/fetch-handler", [
@@ -84,5 +85,39 @@ describe("prBody", () => {
     expect(minimal).not.toContain("undefined");
     expect(minimal).not.toContain("## Storage");
     expect(minimal).not.toContain("Cron Triggers");
+    expect(minimal).not.toContain("Changes made by");
+  });
+
+  it("lists what an agent changed and asks for a review, leaving out runs that kept nothing", () => {
+    const run = (over: Partial<AgentRun>): AgentRun => ({
+      step: "build",
+      agent: "codex",
+      attempt: 1,
+      startedAt: "2026-10-26T00:00:00.000Z",
+      verdict: "fixed",
+      summary: "aliased node-fetch to its CommonJS build",
+      changedFiles: ["vite.config.ts"],
+      ...over,
+    });
+    const body = prBody({
+      projectName: "x",
+      productionBranch: "main",
+      hasCrons: false,
+      skippedEnv: [],
+      manual: [],
+      features: [],
+      storage: [],
+      warnings: [],
+      agentRuns: [
+        run({ step: "convert", summary: "pinned sharp", changedFiles: ["package.json"], fixCommit: "abc1234def" }),
+        run({ attempt: 1, verdict: "cannot-fix", changedFiles: [], error: "Codex couldn't fix it" }),
+        run({ attempt: 2 }),
+      ],
+    });
+    expect(body).toContain("## Changes made by Codex");
+    expect(body).toContain("- Convert the project, in commit abc1234: pinned sharp (`package.json`)");
+    expect(body).toContain("- Build locally with cf: aliased node-fetch to its CommonJS build (`vite.config.ts`)");
+    expect(body).not.toContain("Codex couldn't fix it");
+    expect(body).toContain("- [ ] Review the changes Codex made.");
   });
 });

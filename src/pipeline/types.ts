@@ -12,6 +12,18 @@ export const STEP_IDS = ["clone", "convert", "build", "deploy", "push", "pr", "b
 export type StepId = (typeof STEP_IDS)[number];
 export type StepStatus = "pending" | "running" | "done" | "failed" | "paused";
 
+// The steps' titles, for text written outside the steps themselves, such as an agent's prompt.
+export const STEP_TITLES: Record<StepId, string> = {
+  clone: "Clone the repository",
+  convert: "Convert the project",
+  build: "Build locally with cf",
+  deploy: "Create the Worker with a first deploy",
+  push: "Push the migration branch",
+  pr: "Open the pull request",
+  builds: "Connect Workers Builds",
+  "start-build": "Run the first Cloudflare build",
+};
+
 export interface PauseInfo {
   reason: string;
   actionLabel?: string;

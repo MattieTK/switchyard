@@ -123,6 +123,23 @@ describe("recoverWithAgent", () => {
     expect(outcome.error).toBe("Claude couldn't fix it: the build needs a Supabase key");
   });
 
+  it("puts the tree back as it was when the agent's work is turned down", async () => {
+    const r = await repo();
+    const d = driver(async (req) => {
+      await writeFile(join(req.cwd, "vite.config.ts"), "broken\n");
+      await writeFile(join(req.cwd, "build.js"), "half done\n");
+      await writeFile(join(req.cwd, "scratch.js"), "x\n");
+      return result({ verdict: "cannot-fix", summary: "needs a key" });
+    });
+    const outcome = await recoverWithAgent(input(r, d));
+    expect(outcome.changedFiles).toEqual(["build.js", "scratch.js", "vite.config.ts"]);
+    expect(await readFile(join(r.repoDir, "vite.config.ts"), "utf8")).toBe("export default {}\n");
+    expect(await readFile(join(r.repoDir, "build.js"), "utf8")).toBe("require('./missing')\n");
+    expect(await readFile(join(r.repoDir, "package.json"), "utf8")).toBe('{"name":"app","type":"module"}\n');
+    expect(existsSync(join(r.repoDir, "scratch.js"))).toBe(false);
+    expect(await readFile(join(r.repoDir, ".dev.vars"), "utf8")).toBe("SECRET=dev-value\n");
+  });
+
   it("says when the agent ran out of time or stopped", async () => {
     const r = await repo();
     const late = await recoverWithAgent(input(r, driver(async () => result({ timedOut: true, exitCode: 143, verdict: "no-verdict" }))));

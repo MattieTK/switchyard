@@ -59,4 +59,13 @@ describe("createGitHubClient", () => {
     const pr = await c.createPr("o", "r", { title: "t", head: "cloudflare-migration", base: "main", body: "b" });
     expect(pr).toEqual({ url: "https://github.com/o/r/pull/7", number: 7 });
   });
+
+  it("replaces a pull request's description", async () => {
+    const f = fakeFetch([json({ html_url: "https://github.com/o/r/pull/7", number: 7 })]);
+    const c = createGitHubClient({ fetch: f.fetch, token: async () => "t" });
+    await c.updatePrBody("o", "r", 7, "new body");
+    expect(f.calls[0]?.url).toBe("https://api.github.com/repos/o/r/pulls/7");
+    expect(f.calls[0]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(f.calls[0]?.init?.body))).toEqual({ body: "new body" });
+  });
 });

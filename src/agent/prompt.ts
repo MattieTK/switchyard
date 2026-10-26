@@ -1,4 +1,4 @@
-import type { Job, StepId } from "../pipeline/types.ts";
+import { type Job, STEP_TITLES, type StepId } from "../pipeline/types.ts";
 
 // How much of a failure's output goes into the prompt. The end is kept: errors are usually last.
 export const MAX_FAILURE_OUTPUT = 60_000;
@@ -33,17 +33,6 @@ export interface PromptContext {
   // Names of the variables Switchyard sets when it builds. Their values are never included.
   buildVariableNames: string[];
 }
-
-const STEP_TITLES: Record<StepId, string> = {
-  clone: "Clone the repository",
-  convert: "Convert the project",
-  build: "Build locally with cf",
-  deploy: "Create the Worker with a first deploy",
-  push: "Push the migration branch",
-  pr: "Open the pull request",
-  builds: "Connect Workers Builds",
-  "start-build": "Run the first Cloudflare build",
-};
 
 // Step outputs that help the agent and hold nothing secret.
 const USEFUL_OUTPUTS = ["dir", "projectDir", "buildScript", "workersDevUrl", "branch", "prUrl", "buildUrl"];

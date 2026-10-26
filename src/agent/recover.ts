@@ -67,6 +67,16 @@ async function snapshot(run: CommandRunner, repoDir: string, indexFile: string):
   return (await runOrThrow(run, "git", ["write-tree"], { cwd: repoDir, env })).stdout.trim();
 }
 
+// Puts the working tree back to a snapshot: files added since are removed and every other file
+// is written as it was. The repository's own index is left alone.
+async function restoreSnapshot(run: CommandRunner, repoDir: string, indexFile: string, before: string, after: string): Promise<void> {
+  const added = await runOrThrow(run, "git", ["diff", "--name-only", "--diff-filter=A", before, after], { cwd: repoDir });
+  for (const file of added.stdout.split("\n").filter(Boolean)) await rm(join(repoDir, file), { force: true });
+  const env = { GIT_INDEX_FILE: indexFile };
+  await runOrThrow(run, "git", ["read-tree", before], { cwd: repoDir, env });
+  await runOrThrow(run, "git", ["checkout-index", "--all", "--force"], { cwd: repoDir, env });
+}
+
 function minutes(ms: number): string {
   const n = Math.round(ms / 60_000);
   return `${n} minute${n === 1 ? "" : "s"}`;
@@ -116,13 +126,25 @@ export async function recoverWithAgent(i: RecoverInput): Promise<RecoverOutcome>
   };
   const said = outcome.summary || outcome.message;
 
-  if (result.timedOut) return { ...outcome, error: `${label} didn't finish within ${minutes(i.timeoutMs)}.` };
-  if (result.verdict === "cannot-fix") return { ...outcome, error: `${label} couldn't fix it: ${said || "it gave no reason"}` };
-  if (result.exitCode !== 0 && result.verdict === "no-verdict") {
-    return { ...outcome, error: `${label} stopped with exit code ${result.exitCode}: ${said || "it gave no reason"}` };
-  }
-  if (!changedFiles.length) {
-    return { ...outcome, error: `${label} made no changes Switchyard can keep.${said ? ` It said: ${said}` : ""}` };
+  const error = result.timedOut
+    ? `${label} didn't finish within ${minutes(i.timeoutMs)}.`
+    : result.verdict === "cannot-fix"
+      ? `${label} couldn't fix it: ${said || "it gave no reason"}`
+      : result.exitCode !== 0 && result.verdict === "no-verdict"
+        ? `${label} stopped with exit code ${result.exitCode}: ${said || "it gave no reason"}`
+        : !changedFiles.length
+          ? `${label} made no changes Switchyard can keep.${said ? ` It said: ${said}` : ""}`
+          : null;
+  if (error) {
+    // Work Switchyard won't use mustn't stay in the tree, where a retry would build and push it.
+    if (changedFiles.length) {
+      try {
+        await restoreSnapshot(i.run, i.repoDir, indexFile, before, after);
+      } finally {
+        await rm(indexFile, { force: true });
+      }
+    }
+    return { ...outcome, error };
   }
 
   if (i.commitAs) {

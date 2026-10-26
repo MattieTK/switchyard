@@ -1,3 +1,4 @@
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Progress } from "@base-ui/react/progress";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { activityFromLine } from "../../../src/pipeline/activity.ts";
@@ -131,6 +132,42 @@ function StepDetails({
         </Callout>
       )}
     </>
+  );
+}
+
+// Starting a finished migration over deploys the Worker and pushes the branch again, so it asks
+// first. A job that stopped starts over straight away.
+function StartOverButton({ job, busy, onConfirm }: { job: Job; busy: boolean; onConfirm: () => void }) {
+  if (job.status !== "done") {
+    return (
+      <Button busy={busy} onClick={onConfirm} title="Run every step again, from the clone">
+        Start over
+      </Button>
+    );
+  }
+  const branch = job.plan.repo ? <code>{job.plan.repo.productionBranch}</code> : "the production branch";
+  return (
+    <AlertDialog.Root>
+      <AlertDialog.Trigger className="btn btn-secondary">Start over</AlertDialog.Trigger>
+      <AlertDialog.Portal>
+        <AlertDialog.Backdrop className="dialog-backdrop" />
+        <AlertDialog.Popup className="dialog">
+          <AlertDialog.Title className="dialog-title">Start this migration over?</AlertDialog.Title>
+          <AlertDialog.Description className="dialog-description">
+            Switchyard runs every step again from a fresh copy of {branch}: it converts the project, deploys{" "}
+            <code>{job.plan.workerName}</code> again, force-pushes the migration branch and updates the pull request, or opens
+            a new one if it was closed. Secret values aren't kept after a migration finishes, so the ones already on Cloudflare
+            stay as they are. If you've merged the pull request, plan a new migration instead.
+          </AlertDialog.Description>
+          <div className="row dialog-actions">
+            <AlertDialog.Close className="btn btn-secondary">Cancel</AlertDialog.Close>
+            <AlertDialog.Close className="btn btn-primary" onClick={onConfirm}>
+              Start over
+            </AlertDialog.Close>
+          </div>
+        </AlertDialog.Popup>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 
@@ -298,10 +335,8 @@ export function JobPage({ jobId }: { jobId: string }) {
               {job.status === "running" && <Spinner size="sm" />}
               {status.label}
             </Pill>
-            {canRetry && (
-              <Button busy={busy} onClick={() => void requeue("restart")} title="Run every step again, from the clone">
-                Start over
-              </Button>
+            {(canRetry || job.status === "done") && (
+              <StartOverButton job={job} busy={busy} onConfirm={() => void requeue("restart")} />
             )}
             {canRetry && (
               <Button variant="primary" busy={busy} onClick={() => void requeue("retry")}>

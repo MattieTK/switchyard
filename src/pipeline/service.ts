@@ -71,11 +71,21 @@ export function createJobService(d: {
     return id;
   }
 
-  async function requeue(id: string, reset: (job: Job) => Job, verb: string, opts: { clearLog?: boolean } = {}): Promise<Job> {
+  // A finished job can start over: every step reuses what it finds (the Worker, the branch, the
+  // pull request, the triggers). Its saved values were deleted when it finished, so the secrets
+  // and build variables already on Cloudflare stay as they are.
+  async function requeue(
+    id: string,
+    reset: (job: Job) => Job,
+    verb: string,
+    opts: { clearLog?: boolean; finished?: boolean } = {},
+  ): Promise<Job> {
     const job = await d.store.get(id);
     if (!job) throw new UserInputError("That job doesn't exist.", 404);
-    if (job.status !== "failed" && job.status !== "paused") {
-      throw new UserInputError(`Only failed or paused jobs can be ${verb}.`, 409);
+    const allowed = job.status === "failed" || job.status === "paused" || (opts.finished === true && job.status === "done");
+    if (!allowed) {
+      const which = opts.finished ? "failed, paused or finished" : "failed or paused";
+      throw new UserInputError(`Only ${which} jobs can be ${verb}.`, 409);
     }
     if (opts.clearLog) await d.store.clearLog(id);
     const next = reset(job);
@@ -144,7 +154,7 @@ export function createJobService(d: {
     get: (id) => d.store.get(id),
 
     retry: (id) => requeue(id, resetForRetry, "retried"),
-    restart: (id) => requeue(id, resetForRestart, "started over", { clearLog: true }),
+    restart: (id) => requeue(id, resetForRestart, "started over", { clearLog: true, finished: true }),
 
     async submitBuildToken(id, rawToken) {
       const job = await d.store.get(id);

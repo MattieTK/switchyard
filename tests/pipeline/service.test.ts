@@ -179,12 +179,23 @@ describe("createJobService", () => {
     await expect(service.retry("00000000-0000-4000-8000-00000000ffff")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("starts only failed or paused jobs over, from the first step", async () => {
+  it("starts failed, paused or finished jobs over from the first step, but not queued or running ones", async () => {
     const { service, store, queue } = await setup({ accountId: "acc" });
     const job = await store.create(plan, "acc", {});
     await store.appendLog(job.id, "[build] failed");
-    await expect(service.restart(job.id)).rejects.toThrow("Only failed or paused");
+    await expect(service.restart(job.id)).rejects.toThrow("Only failed, paused or finished jobs can be started over.");
     expect(await store.readLog(job.id)).toBe("[build] failed\n");
+
+    // A finished job can start over; retry stays limited to jobs that stopped.
+    const finished = await store.create(plan, "acc", {});
+    finished.status = "done";
+    for (const s of finished.steps) s.status = "done";
+    await store.save(finished);
+    await expect(service.retry(finished.id)).rejects.toThrow("Only failed or paused jobs can be retried.");
+    const again = await service.restart(finished.id);
+    expect(again.status).toBe("queued");
+    expect(again.steps.every((s) => s.status === "pending")).toBe(true);
+
     job.status = "failed";
     job.steps[0]!.status = "done";
     job.steps[2]!.status = "failed";

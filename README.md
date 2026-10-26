@@ -51,7 +51,7 @@ Switchyard listens on this machine only (`127.0.0.1`), and the browser needs tha
 
 1. **Connect:** paste a Vercel token, use your `gh` login or a GitHub token, and log in to Cloudflare in the browser. Choose the Cloudflare account to deploy to; accounts where you can only read Workers can't be chosen.
 2. **Projects:** pick one or more Vercel projects.
-3. **Plan:** review the plan for each project. You can change the Worker name and the Next.js caching, enter values for variables Vercel doesn't return, and choose upgrade options (below). Approving starts the migration.
+3. **Plan:** review the plan for each project. You can change the Worker name and the Next.js caching, enter values for variables Vercel doesn't return, choose upgrade options, and turn on recovery with your own agent (both below). Approving starts the migration.
 4. **Job:** watch each step and its log. If a step needs something from you, such as installing the Cloudflare GitHub App, the job pauses and says what to do. Failed steps can be retried.
 
 ### Upgrade options
@@ -62,6 +62,32 @@ Apps on Next.js older than 16 are upgraded with the official Next.js codemods, b
 - **ESLint migration:** move from `next lint`, which Next.js 16 removed, to the ESLint CLI.
 - **Update flagged packages:** update packages the upgrade reports as incompatible with the new React to the first release that supports it.
 - **Switch to pnpm:** move an npm, Yarn or bun project to pnpm. `pnpm import` keeps the versions from npm and Yarn lockfiles. Not offered for workspaces.
+
+### Recovery with your own agent
+
+When a step still fails after Switchyard's own fixes, Switchyard can ask your coding agent to fix the project and then run the step again. It's off unless you turn it on in the plan's Recovery card. It covers four steps:
+
+- converting the project;
+- the local build;
+- the first deploy;
+- the first Cloudflare build.
+
+Switchyard runs the agent's CLI as installed on your machine, with your own sign-in, and never reads or stores the agent's credentials:
+
+- **Claude Code** (`claude`), signed in with your Claude subscription (`claude`, then `/login`).
+- **Codex** (`codex`), signed in with ChatGPT (`codex login`). Switchyard runs Codex with the ChatGPT sign-in only, even when an OpenAI API key is set.
+
+The Connect page shows whether each one is installed and signed in. There you choose your preferred agent and, optionally, a model for each; leave the model empty to use the CLI's default.
+
+What happens when a covered step fails:
+
+1. Switchyard sends the agent what it has done so far, the failing command and the end of its output, with your variable values redacted. For the Cloudflare build, it also sends the Workers Builds log.
+2. The agent works in the project folder. `.dev.vars` is moved out of the folder while it runs, and it gets none of the production values or Switchyard's tokens, so it can't deploy or push.
+3. Switchyard checks what changed with git and runs the step again. It tries at most twice per step. Changes it doesn't use are undone.
+4. A conversion fix is committed on its own before the conversion runs again. Other fixes join the migration commit.
+5. The pull request lists every change the agent made and asks you to review them.
+
+Codex runs inside its own sandbox. Claude Code's commands run in its sandbox when it's available: on macOS, and on Linux when `bubblewrap` and `socat` are installed. Otherwise they run without one, and the Connect page says so.
 
 ### What the pull request can contain
 
@@ -80,7 +106,8 @@ Besides vinext's own files (`cloudflare.config.ts`, `vite.config.ts` and the pac
 | What | Default location |
 | --- | --- |
 | Credentials, readable only by you | `~/.config/switchyard/credentials.json` |
-| Jobs and their logs | `~/.config/switchyard/jobs/` |
+| Preferred agent and models | `~/.config/switchyard/preferences.json` |
+| Jobs and their logs, including each agent run's events | `~/.config/switchyard/jobs/` |
 | Working copies of repositories | `~/.cache/switchyard/work/` |
 | Yarn and pnpm set up through Corepack | `~/.cache/switchyard/bin/` |
 

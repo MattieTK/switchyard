@@ -58,7 +58,7 @@ An empty or missing model means the CLI's own default. The Connect page gets an 
 Each driver has `status()`, which spends no tokens:
 
 - Claude: `claude auth status` (JSON). `authMethod: "claude.ai"` reads "Signed in with your Claude subscription (Max)" from `subscriptionType`; `api_key` and similar read "Signed in with an API key, so usage is billed to that key"; exit 1 is "Not signed in: run claude, then /login".
-- Codex: `codex login status` (exit code and stderr). "Logged in using ChatGPT" reads "Signed in with ChatGPT"; "API key configured" reads as an API key; exit 1 is "Not signed in: run codex login".
+- Codex: `codex login status` (exit code and stderr). "Logged in using ChatGPT" reads "Signed in with ChatGPT"; exit 1 is "Not signed in: run codex login". Any other sign-in, such as "API key configured", counts as not signed in, since `forced_login_method="chatgpt"` makes Codex refuse it.
 - A command that can't start is "Not installed".
 - Claude's sandbox: available on macOS, and on Linux when `bwrap` and `socat` are on PATH. The status says which is missing.
 
@@ -75,11 +75,13 @@ The runner owns it. For a step in `RECOVERABLE` (convert, build, deploy, start-b
 1. Build the prompt (below).
 2. Prepare the working copy: for convert, reset to the current base and clean it; for the others, use the tree as it is.
 3. Hold `.dev.vars`: move it to `<workDir>/<jobId>.dev.vars.held` (mode 0600) and restore it in a `finally`. A held file left by a crash is restored before the next run.
-4. Snapshot `git status --porcelain` and run the agent with a 15-minute limit.
-5. Work out `changedFiles` from git, not from agent events.
+4. Snapshot the working tree as a git tree object (`git add -A` and `git write-tree` through a temporary `GIT_INDEX_FILE`, so the real index is untouched) and run the agent with a 15-minute limit.
+5. Snapshot again and work out `changedFiles` with `git diff --name-only` between the two, not from agent events. Comparing `git status` lists wouldn't do: build and deploy run on a tree full of uncommitted conversion changes, so an edit to an already-changed file wouldn't show.
 6. Record an `AgentRun` on `job.agentRuns`.
-7. If the verdict is `cannot-fix`, or nothing changed, the step fails with the agent's message.
+7. If the agent timed out, stopped with an error, answered `cannot-fix`, or changed nothing, the step fails with that reason, and any changes are undone by restoring the first snapshot, so a retry never builds or pushes them.
 8. Otherwise, for convert, commit the changes and set `job.fixBase`. Then re-run from the step's re-run point.
+
+Start over (`resetForRestart`) clears `job.fixBase` and `job.agentRuns`: it starts again from the production branch, without the agent's changes.
 
 Pauses, auth errors and Switchyard's own consistency errors never reach the agent.
 
@@ -104,7 +106,7 @@ Convert resets to `job.fixBase ?? origin/<branch>` instead of `origin/<branch>`.
 2. **What Switchyard has done**: framework and upgrade, package manager and any pnpm switch, cache preset, ticked options, crons, the steps that passed with their non-secret outputs, the changes recorded as warnings, the files Switchyard generated, and the names (not values) of the variables Switchyard sets when it builds.
 3. **The failure**: the command, its exit code and the end of its output (about 60 KB), redacted; for start-build, the end of the Workers Builds log from the API, redacted; and the step's earlier log lines, which the job log already holds redacted.
 4. **Earlier attempts in this run**: what each changed, what the agent said, and the error from the re-run.
-5. **Rules**: change files only inside the project folder; don't commit, push or deploy; don't add environment variables; don't remove or weaken what Switchyard generated; make the smallest change that fixes the cause; stop if the cause is outside the code. End with `SWITCHYARD: fixed` or `SWITCHYARD: cannot fix – <reason>` on its own line.
+5. **Rules**: change files only inside the project folder; don't commit, push or deploy; don't add environment variables; don't remove or weaken what Switchyard generated; make the smallest change that fixes the cause; stop if the cause is outside the code. End with `SWITCHYARD: fixed – <one sentence on what changed>` or `SWITCHYARD: cannot fix – <reason>` on its own line. The pull request quotes that sentence rather than the agent's whole reply, which the user's own settings (such as an output style) can fill with other text.
 
 The prompt goes to the agent on stdin.
 

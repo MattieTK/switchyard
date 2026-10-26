@@ -186,6 +186,13 @@ main.main-wide { max-width: 80rem; }
 
 /* Progress */
 .progress { display: grid; gap: 0.4rem; margin-top: 1.25rem; }
+
+/* Confirmation dialogs */
+.dialog-backdrop { position: fixed; inset: 0; z-index: 100; background: rgb(0 0 0 / 0.35); }
+.dialog { position: fixed; z-index: 101; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(30rem, calc(100vw - 2rem)); padding: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+.dialog-title { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.dialog-description { margin: 0 0 1.1rem; color: var(--fg-2); font-size: 0.92rem; line-height: 1.5; }
+.dialog-actions { justify-content: flex-end; }
 .progress-label { display: flex; justify-content: space-between; font-size: 0.82rem; color: var(--muted); }
 .progress-track { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .progress-indicator { height: 100%; border-radius: inherit; background: var(--fg); transition: width 400ms ease; }

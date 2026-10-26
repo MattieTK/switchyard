@@ -2,6 +2,7 @@ import { Input } from "@base-ui/react/input";
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { type ReactNode, useEffect, useState } from "react";
+import type { AgentId } from "../../../src/agent/types.ts";
 import type { MigrationPlan, PlanOptions } from "../../../src/pipeline/plan.ts";
 import type { Job } from "../../../src/pipeline/types.ts";
 import type { EnvDestination } from "../../../src/translate/env-plan.ts";
@@ -9,6 +10,7 @@ import { api, ApiFailure } from "../api.ts";
 import { go } from "../router.ts";
 import { Button, Callout, Card, Checkbox, Loading, Pill, TextField } from "../ui/controls.tsx";
 import { ArrowIcon } from "../ui/icons.tsx";
+import { RecoveryCard, useAgents } from "./Agents.tsx";
 
 const DESTINATIONS: Record<EnvDestination, string> = {
   "production-build": "production build",
@@ -73,6 +75,8 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
   const [values, setValues] = useState<Record<string, string>>({});
   const [skip, setSkip] = useState<string[]>([]);
   const [options, setOptions] = useState<PlanOptions>(NO_OPTIONS);
+  const [agent, setAgent] = useState<AgentId | null>(null);
+  const agents = useAgents();
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -111,7 +115,7 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
     try {
       const job = await api<Job>("/api/jobs", {
         method: "POST",
-        body: { projectId, workerName, nextCache, values, skip, options },
+        body: { projectId, workerName, nextCache, values, skip, options, agent },
       });
       const [following, ...rest] = next;
       go(following ? `#/plan/${following}${rest.length ? `?next=${rest.join(",")}` : ""}` : `#/jobs/${job.id}`);
@@ -267,6 +271,8 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
             {plan.pnpmSwitch && !plan.pnpmSwitch.available && <p className="note">Switching to pnpm isn't offered: {plan.pnpmSwitch.reason}</p>}
           </Card>
         )}
+
+        <RecoveryCard data={agents.data} agent={agent} onChange={setAgent} />
 
         <Card title="Environment variables" aside={<span className="muted small">{plan.env.entries.length} found</span>}>
           {plan.env.warnings.map((w) => (

@@ -268,6 +268,12 @@ main.main-wide { max-width: 80rem; }
 .log { margin: 0.85rem 0 0; padding: 0.9rem 1rem; max-height: 28rem; overflow: auto; font-family: var(--mono); font-size: 0.8rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--log-fg); background: var(--log-bg); border-radius: 8px; }
 .log-step { color: #71717a; }
 .log-warning { color: #fbbf24; }
+.log-agent { color: #93c5fd; }
+
+/* Agent recovery: runs listed under a step, and each agent on the Connect page. */
+.agent-runs { margin: 0 0 0.5rem; padding-left: 1.1rem; font-size: 0.88rem; color: var(--fg-2); }
+.agent-runs li + li { margin-top: 0.25rem; }
+.agent-row { padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
 
 /* Job page: the log sits beside the steps on wide screens and follows the page while it scrolls.
    The card is the viewport height less 4.25rem above (the 3.25rem topbar plus a gap) and

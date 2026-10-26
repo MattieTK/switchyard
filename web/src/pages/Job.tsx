@@ -2,7 +2,8 @@ import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Progress } from "@base-ui/react/progress";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { activityFromLine } from "../../../src/pipeline/activity.ts";
-import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
+import { AGENT_LABELS } from "../../../src/agent/types.ts";
+import type { AgentRun, Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner, TextField } from "../ui/controls.tsx";
 import { CopyIcon, ExternalIcon } from "../ui/icons.tsx";
@@ -79,21 +80,49 @@ function BuildTokenForm({ jobId, onJob }: { jobId: string; onJob: (job: Job) => 
 
 // onCheckAgain is passed while the job is paused, so the button sits with the instructions
 // that tell the reader to select it, not only in the page header.
+// One line per time an agent was asked to recover the step, newest last.
+function AgentRuns({ runs }: { runs: AgentRun[] }) {
+  if (!runs.length) return null;
+  return (
+    <ul className="agent-runs">
+      {runs.map((r) => (
+        <li key={`${r.startedAt}-${r.attempt}`}>
+          <strong>
+            {AGENT_LABELS[r.agent]}, attempt {r.attempt}:
+          </strong>{" "}
+          {r.error
+            ? r.error
+            : `${r.summary || "fixed it"}${r.rerunPassed ? ", and the step then passed" : ""}.`}
+          {r.changedFiles.length > 0 && (
+            <span className="muted">
+              {" "}
+              {r.error ? "Undid changes to" : "Changed"} {r.changedFiles.join(", ")}.
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function StepDetails({
   step,
+  agentRuns,
   onCheckAgain,
   busy,
   tokenForm,
 }: {
   step: StepState;
+  agentRuns: AgentRun[];
   onCheckAgain?: () => void;
   busy?: boolean;
   tokenForm?: ReactNode;
 }) {
   const links = Object.entries(step.outputs).filter(([k]) => k in LINK_OUTPUTS);
-  if (!links.length && !step.error && !step.pause) return null;
+  if (!links.length && !step.error && !step.pause && !agentRuns.length) return null;
   return (
     <>
+      <AgentRuns runs={agentRuns} />
       {links.length > 0 && (
         <div className="output-links">
           {links.map(([k, v]) => (
@@ -223,7 +252,7 @@ function LogLine({ line }: { line: string }) {
   return (
     <>
       <span className="log-step">{prefix}</span>
-      <span className={rest.startsWith("Warning:") ? "log-warning" : undefined}>{rest}</span>
+      <span className={rest.startsWith("Warning:") ? "log-warning" : rest.startsWith("Agent:") ? "log-agent" : undefined}>{rest}</span>
     </>
   );
 }
@@ -406,6 +435,7 @@ export function JobPage({ jobId }: { jobId: string }) {
                 details: (
                   <StepDetails
                     step={s}
+                    agentRuns={(job.agentRuns ?? []).filter((r) => r.step === s.id)}
                     busy={busy}
                     onCheckAgain={job.status === "paused" && s.pause ? () => void requeue("retry") : undefined}
                     tokenForm={job.status === "paused" ? <BuildTokenForm jobId={jobId} onJob={setJob} /> : undefined}

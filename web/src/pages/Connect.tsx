@@ -5,6 +5,7 @@ import { api, authUrl } from "../api.ts";
 import { go, useRoute } from "../router.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, SelectField, TextField } from "../ui/controls.tsx";
 import { ArrowIcon, ChevronIcon, ExternalIcon } from "../ui/icons.tsx";
+import { AgentsCard } from "./Agents.tsx";
 
 type Refresh = () => Promise<void>;
 
@@ -102,6 +103,7 @@ export function Connect() {
         <VercelCard status={status.vercel} onChange={refresh} />
         <CloudflareCard status={status.cloudflare} onChange={refresh} />
         <GitHubCard status={status.github} onChange={refresh} />
+        <AgentsCard />
       </div>
       <div className="action-bar">
         <p className="note">{ready ? "All three accounts are connected." : "Connect all three accounts to continue."}</p>

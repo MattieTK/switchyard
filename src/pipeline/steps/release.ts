@@ -8,7 +8,7 @@ import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
 import type { Step, StepContext } from "../types.ts";
-import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
+import { commitIdentityArgs, git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
 
 const WORKERS_DEV = /https:\/\/[a-z0-9.-]+\.workers\.dev/i;
 
@@ -86,12 +86,9 @@ export const pushStep: Step = {
     await local(["add", "-A"]);
     const status = await runOrThrow(ctx.deps.run, "git", ["status", "--porcelain"], { cwd: repoDir });
     if (status.output.trim()) {
-      // The repository's own hooks aren't Switchyard's to run, and a fresh clone may have no git identity.
-      const identity = await ctx.deps.run("git", ["config", "user.email"], { cwd: repoDir });
-      const asSwitchyard =
-        identity.code === 0 && identity.stdout.trim() ? [] : ["-c", "user.name=Switchyard", "-c", "user.email=switchyard@localhost"];
+      // The repository's own hooks aren't Switchyard's to run.
       await local([
-        ...asSwitchyard,
+        ...(await commitIdentityArgs(ctx.deps.run, repoDir)),
         "commit",
         "--no-verify",
         "-m",

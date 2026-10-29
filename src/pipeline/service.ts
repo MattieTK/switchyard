@@ -8,6 +8,7 @@ import type { JobStore } from "./job-store.ts";
 import { buildPlan as defaultBuildPlan, DEFAULT_PLAN_OPTIONS, type MigrationPlan, type PlanOptions } from "./plan.ts";
 import type { JobQueue } from "./queue.ts";
 import { resetForRestart, resetForRetry } from "./runner.ts";
+import { AI_FIXABLE_STEPS } from "./step-info.ts";
 import type { Job, JobEvent } from "./types.ts";
 
 export interface StartInput {
@@ -27,6 +28,8 @@ export interface JobService {
   get(id: string): Promise<Job | null>;
   retry(id: string): Promise<Job>;
   restart(id: string): Promise<Job>;
+  // Turns on OpenAI fixes for a job whose build, deploy or Cloudflare build failed, and retries it.
+  fixWithAI(id: string): Promise<Job>;
   // Registers a user API token as the Workers Builds token for a job paused at the builds step.
   submitBuildToken(id: string, token: string): Promise<Job>;
   // A JPEG of the job's deployed site, when one was taken.
@@ -49,6 +52,9 @@ function applyOptions(plan: MigrationPlan, chosen: Partial<PlanOptions> = {}): M
     throw new UserInputError(
       plan.pnpmSwitch && !plan.pnpmSwitch.available ? plan.pnpmSwitch.reason : "This project can't switch to pnpm.",
     );
+  }
+  if (options.aiRepair && !plan.aiModel) {
+    throw new UserInputError("Connect OpenAI on the Connect page to have it fix build errors, then build the plan again.");
   }
   return options.switchToPnpm
     ? { ...plan, options, packageManager: "pnpm", switchedFrom: plan.packageManager }
@@ -99,10 +105,12 @@ export function createJobService(d: {
   return {
     async plan(projectId) {
       const account = await accountId();
-      const { plan, values } = await buildPlan(
+      const built = await buildPlan(
         { vercel: await d.clients.vercel(), github: await d.clients.github(), cloudflare: d.clients.cloudflare, accountId: account },
         projectId,
       );
+      const plan = { ...built.plan, aiModel: (await d.credentials.read()).openai?.model ?? null };
+      const { values } = built;
       drafts.set(projectId, { plan, values, accountId: account });
       return plan;
     },
@@ -157,6 +165,25 @@ export function createJobService(d: {
 
     retry: (id) => requeue(id, resetForRetry, "retried"),
     restart: (id) => requeue(id, resetForRestart, "started over", { clearLog: true, finished: true }),
+
+    async fixWithAI(id) {
+      const job = await d.store.get(id);
+      if (!job) throw new UserInputError("That job doesn't exist.", 404);
+      const failed = job.steps.find((s) => s.status === "failed");
+      if (job.status !== "failed" || !failed) throw new UserInputError("Only a failed job can be fixed.", 409);
+      if (!AI_FIXABLE_STEPS.includes(failed.id)) {
+        throw new UserInputError("OpenAI can fix failures of the build, the first deploy and the Cloudflare build, but not this step.");
+      }
+      if (!(await d.credentials.read()).openai) throw new UserInputError("Sign in with ChatGPT on the Connect page first.");
+      await d.store.save({ ...job, plan: { ...job.plan, options: { ...DEFAULT_PLAN_OPTIONS, ...job.plan.options, aiRepair: true } } });
+      // A failed Cloudflare build is kept, so OpenAI can start from its log.
+      const failedBuild = failed.id === "start-build" ? failed.outputs.buildUuid : undefined;
+      return requeue(id, (j) => {
+        const next = resetForRetry(j);
+        if (!failedBuild) return next;
+        return { ...next, steps: next.steps.map((s) => (s.id === "start-build" ? { ...s, outputs: { failedBuild } } : s)) };
+      }, "fixed");
+    },
 
     async submitBuildToken(id, rawToken) {
       const job = await d.store.get(id);

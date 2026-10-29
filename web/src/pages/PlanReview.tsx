@@ -19,10 +19,16 @@ const DESTINATIONS: Record<EnvDestination, string> = {
 
 const SUPPORT_TONE = { supported: "ok", partial: "warn", unsupported: "neutral" } as const;
 
-const NO_OPTIONS: PlanOptions = { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false };
+const NO_OPTIONS: PlanOptions = {
+  adoptionCodemods: false,
+  eslintMigration: false,
+  updateFlaggedPackages: false,
+  switchToPnpm: false,
+  aiRepair: false,
+};
 
 // The opt-ins that apply when Switchyard upgrades Next.js.
-const UPGRADE_OPTIONS: { key: Exclude<keyof PlanOptions, "switchToPnpm">; label: string; description: string }[] = [
+const UPGRADE_OPTIONS: { key: Exclude<keyof PlanOptions, "switchToPnpm" | "aiRepair">; label: string; description: string }[] = [
   {
     key: "adoptionCodemods",
     label: "Adoption codemods",
@@ -80,6 +86,8 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
       .then((p) => {
         setPlan(p);
         setWorkerName(p.workerName);
+        // Offered, and on by default, once OpenAI is connected.
+        setOptions((current) => ({ ...current, aiRepair: Boolean(p.aiModel) }));
       })
       .catch((e: ApiFailure) => setError(e));
   }, [projectId]);
@@ -265,6 +273,22 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
               )}
             </div>
             {plan.pnpmSwitch && !plan.pnpmSwitch.available && <p className="note">Switching to pnpm isn't offered: {plan.pnpmSwitch.reason}</p>}
+          </Card>
+        )}
+
+        {plan.aiModel && (
+          <Card title="If a build fails">
+            <div className="radio-group">
+              <OptionRow
+                label="Fix build errors with OpenAI"
+                checked={options.aiRepair}
+                onChange={(c) => setOptions((current) => ({ ...current, aiRepair: c }))}
+              >
+                When the local build, the first deploy or the Cloudflare build fails, {plan.aiModel} reads the error and the
+                project's files, changes the code and tries again. Its changes go on the migration branch and the pull request
+                lists them for you to review.
+              </OptionRow>
+            </div>
           </Card>
         )}
 

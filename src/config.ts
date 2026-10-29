@@ -1,3 +1,8 @@
+import { readFileSync } from "node:fs";
+
+// Switchyard's version, which it names itself with to OpenAI.
+export const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 // Pinned vinext release used for Next.js conversions.
 export const VINEXT_VERSION = "1.1.0";
 

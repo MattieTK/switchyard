@@ -3,10 +3,11 @@ import { join } from "node:path";
 import { gitAuthEnv } from "../../auth/github.ts";
 import { prBody } from "../../codegen/pr-body.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
-import { runOrThrow } from "../../exec.ts";
+import { CommandError, runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets, secretKeys } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
+import { repairWithAI, repairWarning } from "../ai-repair.ts";
 import type { Step, StepContext } from "../types.ts";
 import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
 
@@ -33,11 +34,28 @@ export const deployStep: Step = {
 
     try {
       const { cmd, args: full } = execCommand(plan.packageManager, "cf", args);
-      const result = await runOrThrow(ctx.deps.run, cmd, full, {
-        cwd: dir,
-        onLine: ctx.log,
-        env: { ...productionBuildEnv(ctx), CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId },
-      });
+      const deploy = () =>
+        ctx.deps.run(cmd, full, {
+          cwd: dir,
+          onLine: ctx.log,
+          env: { ...productionBuildEnv(ctx), CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId },
+        });
+      let result = await deploy();
+      if (result.code !== 0) {
+        const what = "the first deploy";
+        const repair = await repairWithAI(ctx, {
+          what,
+          output: result.output,
+            projectDir: dir,
+          verify: deploy,
+          notes: [
+            "The deploy runs cf deploy, which builds the project and uploads it as a Worker. The local build passed just before, so look first at what happens after the build: the Worker's configuration in cloudflare.config.ts, its size, and code that runs when the Worker starts.",
+          ],
+        });
+        if (!repair?.fixed || !repair.passed) throw new CommandError(cmd, full, result);
+        result = repair.passed;
+        ctx.outputs.warnings = JSON.stringify([repairWarning(repair, what)]);
+      }
       const url = result.output.match(WORKERS_DEV)?.[0];
       if (url) ctx.outputs.workersDevUrl = url;
     } finally {
@@ -78,33 +96,34 @@ export const pushStep: Step = {
   id: "push",
   title: "Push the migration branch",
   async run(ctx) {
-    const repoDir = requireOutput(ctx, "clone", "dir");
-    const token = await ctx.deps.githubToken();
-    ctx.addSecret(token);
-    const local = git(ctx, repoDir);
-
-    await local(["add", "-A"]);
-    const status = await runOrThrow(ctx.deps.run, "git", ["status", "--porcelain"], { cwd: repoDir });
-    if (status.output.trim()) {
-      // The repository's own hooks aren't Switchyard's to run, and a fresh clone may have no git identity.
-      const identity = await ctx.deps.run("git", ["config", "user.email"], { cwd: repoDir });
-      const asSwitchyard =
-        identity.code === 0 && identity.stdout.trim() ? [] : ["-c", "user.name=Switchyard", "-c", "user.email=switchyard@localhost"];
-      await local([
-        ...asSwitchyard,
-        "commit",
-        "--no-verify",
-        "-m",
-        "chore: move hosting from Vercel to Cloudflare Workers",
-        "-m",
-        "Converted by Switchyard. The pull request lists the remaining steps.",
-      ]);
-    }
-    // The refspec is fixed: this is the only branch Switchyard ever pushes to.
-    await git(ctx, repoDir, gitAuthEnv(token))(["push", "--force", "origin", `HEAD:refs/heads/${MIGRATION_BRANCH}`]);
+    await commitAndPush(ctx, [
+      "chore: move hosting from Vercel to Cloudflare Workers",
+      "Converted by Switchyard. The pull request lists the remaining steps.",
+    ]);
     ctx.outputs.branch = MIGRATION_BRANCH;
   },
 };
+
+// Commits every change in the working copy, when there is one, and pushes the migration branch.
+// message holds the subject, then any paragraphs of the body.
+export async function commitAndPush(ctx: StepContext, message: readonly string[]): Promise<void> {
+  const repoDir = requireOutput(ctx, "clone", "dir");
+  const token = await ctx.deps.githubToken();
+  ctx.addSecret(token);
+  const local = git(ctx, repoDir);
+
+  await local(["add", "-A"]);
+  const status = await runOrThrow(ctx.deps.run, "git", ["status", "--porcelain"], { cwd: repoDir });
+  if (status.output.trim()) {
+    // The repository's own hooks aren't Switchyard's to run, and a fresh clone may have no git identity.
+    const identity = await ctx.deps.run("git", ["config", "user.email"], { cwd: repoDir });
+    const asSwitchyard =
+      identity.code === 0 && identity.stdout.trim() ? [] : ["-c", "user.name=Switchyard", "-c", "user.email=switchyard@localhost"];
+    await local([...asSwitchyard, "commit", "--no-verify", ...message.flatMap((m) => ["-m", m])]);
+  }
+  // The refspec is fixed: this is the only branch Switchyard ever pushes to.
+  await git(ctx, repoDir, gitAuthEnv(token))(["push", "--force", "origin", `HEAD:refs/heads/${MIGRATION_BRANCH}`]);
+}
 
 export const prStep: Step = {
   id: "pr",
@@ -114,7 +133,7 @@ export const prStep: Step = {
     const repo = requireRepo(plan);
     const gh = await ctx.deps.github();
     const existing = await gh.findOpenPr(repo.owner, repo.name, MIGRATION_BRANCH);
-    const warnings = (["convert", "build"] as const).flatMap(
+    const warnings = (["convert", "build", "deploy"] as const).flatMap(
       (step) => JSON.parse(ctx.output(step).warnings ?? "[]") as string[],
     );
     const pr =

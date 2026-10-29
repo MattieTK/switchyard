@@ -45,7 +45,7 @@ async function setup(
     cloudflareWith,
   } as unknown as ClientFactory;
   const service = createJobService({ store, events: createJobEvents(), queue, clients, credentials, buildPlan });
-  return { service, store, queue, buildPlan, getWorkerTag, cloudflareWith };
+  return { service, store, queue, buildPlan, getWorkerTag, cloudflareWith, credentials };
 }
 
 const input = { projectId: "prj_1", workerName: "shop", nextCache: "kv" as const, values: {}, skip: [] };
@@ -58,7 +58,7 @@ describe("createJobService", () => {
 
   it("builds a plan for the chosen account", async () => {
     const { service, buildPlan } = await setup({ accountId: "acc" });
-    expect(await service.plan("prj_1")).toBe(plan);
+    expect(await service.plan("prj_1")).toEqual({ ...plan, aiModel: null });
     expect(buildPlan.mock.calls[0]?.[0]).toMatchObject({ accountId: "acc" });
   });
 
@@ -113,6 +113,44 @@ describe("createJobService", () => {
       switchedFrom: "yarn",
       options: { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: false, switchToPnpm: true },
     });
+  });
+
+  it("offers OpenAI fixes only when OpenAI is connected", async () => {
+    const { service, credentials } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    await expect(service.start({ ...input, skip: ["s", "t"], options: { aiRepair: true } })).rejects.toThrow("Connect OpenAI");
+
+    await credentials.update((c) => ({ ...c, openai: { kind: "apikey", apiKey: "sk-test", model: "gpt-5.5" } }));
+    expect((await service.plan("prj_1")).aiModel).toBe("gpt-5.5");
+    const job = await service.start({ ...input, skip: ["s", "t"], options: { aiRepair: true } });
+    expect(job.plan.options?.aiRepair).toBe(true);
+  });
+
+  it("turns on OpenAI fixes for a failed build and retries it, keeping a failed Cloudflare build for its log", async () => {
+    const { service, store, queue, credentials } = await setup({ accountId: "acc" });
+    await service.plan("prj_1");
+    const job = await service.start({ ...input, skip: ["s", "t"] });
+    const fail = async (id: "convert" | "start-build", outputs: Record<string, string> = {}) =>
+      store.save({
+        ...job,
+        status: "failed",
+        steps: job.steps.map((s) => (s.id === id ? { ...s, status: "failed", error: "boom", outputs } : s)),
+      });
+
+    await fail("start-build", { buildUuid: "b-1", buildUrl: "https://dash" });
+    await expect(service.fixWithAI(job.id)).rejects.toThrow("Sign in with ChatGPT");
+
+    await credentials.update((c) => ({ ...c, openai: { kind: "apikey", apiKey: "sk", model: "gpt-5.5" } }));
+    const fixed = await service.fixWithAI(job.id);
+    expect(fixed.plan.options?.aiRepair).toBe(true);
+    expect(fixed.status).toBe("queued");
+    expect(fixed.steps.find((s) => s.id === "start-build")).toEqual({ id: "start-build", status: "pending", outputs: { failedBuild: "b-1" } });
+    expect(queue.enqueue).toHaveBeenLastCalledWith(job.id);
+
+    await fail("convert");
+    await expect(service.fixWithAI(job.id)).rejects.toThrow("but not this step");
+    await store.save({ ...job, status: "done" });
+    await expect(service.fixWithAI(job.id)).rejects.toThrow("Only a failed job");
   });
 
   it("refuses options the plan didn't offer", async () => {

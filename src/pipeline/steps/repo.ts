@@ -32,6 +32,7 @@ import {
   runScriptCommand,
 } from "../../translate/package-manager.ts";
 import type { Step, StepContext } from "../types.ts";
+import { repairWithAI, repairWarning } from "../ai-repair.ts";
 import { findUndeclaredImports, previousVersion } from "../undeclared-deps.ts";
 import { git, productionBuildEnv, projectDirFor, requireOutput, requireRepo } from "./shared.ts";
 
@@ -458,9 +459,22 @@ export const buildStep: Step = {
       const result = await ctx.deps.run(cmd, args, options);
       if (result.code === 0) break;
       const added = repairs < MAX_DEPENDENCY_REPAIRS ? await repairUndeclaredImports(ctx, dir, result.output) : [];
-      if (!added.length) throw new CommandError(cmd, args, result);
-      for (const w of added) ctx.log(`Warning: ${w}`);
-      warnings.push(...added);
+      if (added.length) {
+        for (const w of added) ctx.log(`Warning: ${w}`);
+        warnings.push(...added);
+        continue;
+      }
+      const what = "the local build";
+      const repair = await repairWithAI(ctx, {
+        what,
+        output: result.output,
+        projectDir: dir,
+        verify: () => ctx.deps.run(cmd, args, options),
+        notes: [`The build runs ${[cmd, ...args].join(" ")} in the project's folder.`],
+      });
+      if (!repair?.fixed) throw new CommandError(cmd, args, result);
+      warnings.push(repairWarning(repair, what));
+      break;
     }
     if (warnings.length) ctx.outputs.warnings = JSON.stringify(warnings);
   },

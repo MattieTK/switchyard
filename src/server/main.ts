@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import open from "open";
 import { adapterById } from "../adapters/registry.ts";
 import { createCloudflareTokenProvider, createPendingAuthStore } from "../auth/cloudflare-oauth.ts";
+import { createChatGPTTokenProvider } from "../auth/openai-oauth.ts";
 import { randomToken } from "../auth/pkce.ts";
 import { createCredentialStore } from "../auth/store.ts";
 import { createClientFactory } from "../clients/factory.ts";
@@ -27,7 +28,8 @@ const store = createCredentialStore(paths.credentialsFile);
 const run = createCommandRunner({ pathPrefix: paths.binDir });
 const redactor = createRedactor();
 const cloudflareToken = createCloudflareTokenProvider({ store, fetch, clientId: CLOUDFLARE_CLIENT_ID });
-const clients = createClientFactory({ store, fetch, run, cloudflareToken });
+const chatgptTokens = createChatGPTTokenProvider({ store, fetch });
+const clients = createClientFactory({ store, fetch, run, cloudflareToken, chatgptTokens });
 const jobStore = createJobStore(paths.jobsDir);
 const events = createJobEvents();
 
@@ -37,6 +39,7 @@ const pipeline: PipelineDeps = {
   github: clients.github,
   githubToken: async () => (await clients.githubAuth()).token,
   cloudflareToken,
+  openai: clients.openai,
   adapter: adapterById,
   ensurePackageManager: (pm, cwd, log) => ensurePackageManager({ pm, cwd, run, binDir: paths.binDir, log }),
   workDir: paths.workDir,

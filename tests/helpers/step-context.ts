@@ -30,6 +30,7 @@ export function makeContext(
     github: async () => ({}) as GitHubClient,
     githubToken: async () => "gh-token",
     cloudflareToken: async () => "cf-token",
+    openai: async () => null,
     adapter: () => null,
     ensurePackageManager: async () => {},
     saveScreenshot: async () => {},
@@ -44,6 +45,7 @@ export function makeContext(
     deps,
     log: (l) => logs.push(l),
     addSecret: (s) => secrets.push(s),
+    redact: (text) => secrets.reduce((t, s) => t.split(s).join("***"), text),
     outputs: {},
     output: (id) => job.steps.find((s) => s.id === id)?.outputs ?? {},
   };

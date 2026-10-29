@@ -13,7 +13,7 @@ export interface RunnerDeps {
   pipeline: PipelineDeps;
 }
 
-const SERVICE_NAMES: Record<Service, string> = { vercel: "Vercel", cloudflare: "Cloudflare", github: "GitHub" };
+const SERVICE_NAMES: Record<Service, string> = { vercel: "Vercel", cloudflare: "Cloudflare", github: "GitHub", openai: "OpenAI" };
 
 function describe(e: unknown): string {
   if (e instanceof CommandError) return `${e.message}. The output is in the log.`;
@@ -74,6 +74,7 @@ export async function runJob(jobId: string, steps: readonly Step[], d: RunnerDep
       deps,
       log,
       addSecret: (v) => d.redactor.add(v),
+      redact: (text) => d.redactor.redact(text),
       outputs: state.outputs,
       output: (id) => job.steps.find((s) => s.id === id)?.outputs ?? {},
     };

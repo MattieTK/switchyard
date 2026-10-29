@@ -60,6 +60,8 @@ const LINE_PATTERNS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
   [/building (\w+) environment for production/, (m) => `Building the ${m[1]} environment`],
   [/Starting asset upload|Building list of assets/, () => "Uploading assets"],
   [/^Build status: (.+)$/, (m) => `Waiting for the Cloudflare build (${m[1]})`],
+  [/^Asking OpenAI \(/, () => "Asking OpenAI for a fix"],
+  [/^OpenAI: (.+)$/, (m) => `OpenAI is ${m[1]}`],
 ];
 
 // What an output line says is starting, or null for ordinary output.

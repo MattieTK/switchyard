@@ -2,6 +2,7 @@ import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Progress } from "@base-ui/react/progress";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { activityFromLine } from "../../../src/pipeline/activity.ts";
+import { AI_FIXABLE_STEPS, STEP_INFO } from "../../../src/pipeline/step-info.ts";
 import type { Job, StepId, StepState } from "../../../src/pipeline/types.ts";
 import { api, apiText, authUrl } from "../api.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, Spinner, TextField } from "../ui/controls.tsx";
@@ -10,16 +11,10 @@ import { StepChain } from "../ui/StepChain.tsx";
 
 const MAX_LINES = 2000;
 
-const STEP_TITLES: Record<StepId, string> = {
-  clone: "Clone the repository",
-  convert: "Convert the project",
-  build: "Build locally with cf",
-  deploy: "Create the Worker with a first deploy",
-  push: "Push the migration branch",
-  pr: "Open the pull request",
-  builds: "Connect Workers Builds",
-  "start-build": "Run the first Cloudflare build",
-};
+const STEP_TITLES = Object.fromEntries(Object.entries(STEP_INFO).map(([id, info]) => [id, info.title])) as Record<StepId, string>;
+
+// Whether OpenAI is connected, which decides how a failed step offers a fix.
+type OpenAIStatus = { connected: false } | { connected: true; via: "chatgpt" | "apikey"; model: string };
 
 const LINK_OUTPUTS: Record<string, string> = {
   prUrl: "Pull request",
@@ -79,16 +74,63 @@ function BuildTokenForm({ jobId, onJob }: { jobId: string; onJob: (job: Job) => 
 
 // onCheckAgain is passed while the job is paused, so the button sits with the instructions
 // that tell the reader to select it, not only in the page header.
+// Under a failed step OpenAI can fix: a way to have it try, or to sign in first so it can.
+function AIFix({
+  job,
+  openai,
+  busy,
+  onFix,
+}: {
+  job: Job;
+  openai: OpenAIStatus | null;
+  busy: boolean;
+  onFix: () => void;
+}) {
+  if (!openai) return null;
+  if (!openai.connected) {
+    return (
+      <Callout tone="info" title="OpenAI can try to fix this">
+        <p style={{ margin: 0 }}>
+          Sign in with ChatGPT and a model reads this error and the project's files, changes the code and tries this step
+          again. Its changes go on the migration branch for you to review in the pull request.
+        </p>
+        <div className="row" style={{ marginTop: "0.6rem" }}>
+          <ButtonLink variant="primary" href={`#/connect?return=${job.id}`}>
+            Sign in with ChatGPT
+          </ButtonLink>
+        </div>
+      </Callout>
+    );
+  }
+  const tried = job.plan.options?.aiRepair === true;
+  return (
+    <Callout tone="info" title={tried ? "OpenAI didn't fix this" : "OpenAI can try to fix this"}>
+      <p style={{ margin: 0 }}>
+        {tried
+          ? `${openai.model} tried and stopped. The log shows what it found and changed. You can let it try again.`
+          : `${openai.model} reads this error and the project's files, changes the code and runs this step again. Its changes go on the migration branch for you to review in the pull request.`}
+      </p>
+      <div className="row" style={{ marginTop: "0.6rem" }}>
+        <Button variant="primary" busy={busy} onClick={onFix}>
+          {tried ? "Try again with AI" : "Fix with AI"}
+        </Button>
+      </div>
+    </Callout>
+  );
+}
+
 function StepDetails({
   step,
   onCheckAgain,
   busy,
   tokenForm,
+  aiFix,
 }: {
   step: StepState;
   onCheckAgain?: () => void;
   busy?: boolean;
   tokenForm?: ReactNode;
+  aiFix?: ReactNode;
 }) {
   const links = Object.entries(step.outputs).filter(([k]) => k in LINK_OUTPUTS);
   if (!links.length && !step.error && !step.pause) return null;
@@ -106,6 +148,7 @@ function StepDetails({
         </div>
       )}
       {step.error && <Callout tone="error">{step.error}</Callout>}
+      {step.error && aiFix}
       {step.pause && (
         <Callout tone="warning">
           <p style={{ margin: 0 }}>{step.pause.reason}</p>
@@ -266,6 +309,13 @@ export function JobPage({ jobId }: { jobId: string }) {
   // What the running step is doing, from the server's activity events.
   const [activity, setActivity] = useState<{ step: StepId; text: string } | null>(null);
   const [logCopied, setLogCopied] = useState(false);
+  const [openai, setOpenAI] = useState<OpenAIStatus | null>(null);
+
+  useEffect(() => {
+    api<OpenAIStatus>("/api/openai")
+      .then(setOpenAI)
+      .catch(() => setOpenAI(null));
+  }, []);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -304,8 +354,9 @@ export function JobPage({ jobId }: { jobId: string }) {
     };
   }, [jobId]);
 
-  // Retry runs the step that stopped again; restart runs every step again from the clone.
-  const requeue = async (action: "retry" | "restart") => {
+  // Retry runs the step that stopped again; restart runs every step again from the clone; fix-with-ai
+  // turns on OpenAI fixes and runs the step again.
+  const requeue = async (action: "retry" | "restart" | "fix-with-ai") => {
     setBusy(true);
     // A restart clears the saved log. Clearing the lines first means the new run's first
     // lines, which can arrive before the response, aren't cleared along with the old ones.
@@ -409,6 +460,11 @@ export function JobPage({ jobId }: { jobId: string }) {
                     busy={busy}
                     onCheckAgain={job.status === "paused" && s.pause ? () => void requeue("retry") : undefined}
                     tokenForm={job.status === "paused" ? <BuildTokenForm jobId={jobId} onJob={setJob} /> : undefined}
+                    aiFix={
+                      job.status === "failed" && AI_FIXABLE_STEPS.includes(s.id) ? (
+                        <AIFix job={job} openai={openai} busy={busy} onFix={() => void requeue("fix-with-ai")} />
+                      ) : undefined
+                    }
                   />
                 ),
               }))}

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudflareClient } from "../../../src/clients/cloudflare.ts";
 import type { GitHubClient } from "../../../src/clients/github.ts";
@@ -15,6 +16,36 @@ describe("deployStep", () => {
     [{ id: "p", key: "API_KEY", value: "prod-secret", type: "encrypted", decrypted: true, target: ["production"] }],
     [],
   );
+
+  it("lets OpenAI fix a failed deploy, keeps the passing deploy's URL and lists the fix for the pull request", async () => {
+    const repoDir = await makeTempDir();
+    await writeFile(join(repoDir, "cloudflare.config.ts"), 'compatibilityDate: "2099-01-01"\n');
+    let deploys = 0;
+    const { run } = fakeRunner(() =>
+      ++deploys === 1
+        ? { code: 1, output: "Error: compatibility date 2099-01-01 is in the future" }
+        : { code: 0, output: "Deployed shop\n  https://shop.acme.workers.dev\n" },
+    );
+    const turns = [
+      [{ name: "replace_in_file", args: { path: "cloudflare.config.ts", old_text: "2099-01-01", new_text: "2026-10-14" } }],
+      [{ name: "run_check", args: {} }],
+      [{ name: "finish", args: { fixed: true, summary: "The compatibility date was in the future." } }],
+    ];
+    const respond = vi.fn(async () => ({
+      id: "r",
+      output: (turns.shift() ?? []).map((c, i) => ({ type: "function_call", call_id: `c${i}`, name: c.name, arguments: JSON.stringify(c.args) })),
+    }));
+    const cloudflare = { getWorkerTag: async () => "tag-1", screenshot: async () => new Uint8Array() } as unknown as CloudflareClient;
+    const { ctx } = makeContext({
+      plan: { options: { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false, aiRepair: true } },
+      deps: { run, cloudflare, workDir: repoDir, openai: async () => ({ model: "gpt-5.5", client: { listModels: async () => [], respond } }) },
+      outputs: { clone: { dir: repoDir }, convert: { projectDir: repoDir } },
+    });
+    await deployStep.run(ctx);
+    expect(deploys).toBe(2);
+    expect(ctx.outputs.workersDevUrl).toBe("https://shop.acme.workers.dev");
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")[0]).toMatch(/^The first deploy failed, and OpenAI \(gpt-5.5\) fixed it/);
+  });
 
   it("deploys with the OAuth token and a temporary secrets file, then records the Worker", async () => {
     const workDir = await makeTempDir();

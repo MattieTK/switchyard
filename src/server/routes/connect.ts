@@ -3,6 +3,7 @@ import { z } from "zod";
 import { buildAuthorizeUrl, exchangeCode } from "../../auth/cloudflare-oauth.ts";
 import { createCloudflareClient, readOnlyAccountMessage, type CloudflareAccount } from "../../clients/cloudflare.ts";
 import { createGitHubClient } from "../../clients/github.ts";
+import { DEVICE_CODE_TTL_MS, pollDeviceCode, requestDeviceCode, type DeviceCode } from "../../auth/openai-oauth.ts";
 import { createVercelClient, probeVercelToken, type ScopeProbe, type VercelTeam } from "../../clients/vercel.ts";
 import { UserInputError } from "../../errors.ts";
 import { isAuthError } from "../../http.ts";
@@ -18,6 +19,10 @@ export interface ConnectionStatus {
     | { connected: false; error?: string }
     | { connected: true; email?: string; accountId?: string; accountName?: string; accounts: CloudflareAccount[] };
   github: { connected: false; error?: string } | { connected: true; source: "gh" | "pat"; login: string };
+  // Optional: fixes build and deploy errors when connected.
+  openai:
+    | { connected: false; error?: string }
+    | { connected: true; via: "chatgpt" | "apikey"; email?: string; plan?: string; model: string; models: string[] };
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -55,9 +60,29 @@ export function connectRoutes(d: AppDeps): Hono {
       }
     };
 
-    const [v, cf, gh] = await Promise.all([vercel(), cloudflare(), github()]);
+    const openai = async (): Promise<ConnectionStatus["openai"]> => {
+      const saved = creds.openai;
+      const connected = await d.clients.openai();
+      if (!saved || !connected) return { connected: false };
+      const { model } = saved;
+      const who =
+        saved.kind === "chatgpt"
+          ? { via: "chatgpt" as const, ...(saved.email ? { email: saved.email } : {}), ...(saved.plan ? { plan: saved.plan } : {}) }
+          : { via: "apikey" as const };
+      try {
+        const models = await connected.client.listModels();
+        // A model OpenAI has since retired stays listed, so the select can show what's chosen.
+        return { connected: true, ...who, model, models: models.includes(model) ? models : [model, ...models] };
+      } catch (e) {
+        if (isAuthError(e)) return { connected: false, error: e.message };
+        // Still connected when OpenAI can't be reached; the saved model is the only one shown.
+        return { connected: true, ...who, model, models: [model] };
+      }
+    };
+
+    const [v, cf, gh, ai] = await Promise.all([vercel(), cloudflare(), github(), openai()]);
     // JSON drops undefined fields, so the browser sees only what is known.
-    return c.json({ vercel: v, cloudflare: cf, github: gh } satisfies ConnectionStatus);
+    return c.json({ vercel: v, cloudflare: cf, github: gh, openai: ai } satisfies ConnectionStatus);
   });
 
   r.post("/api/vercel/token", async (c) => {
@@ -130,6 +155,73 @@ export function connectRoutes(d: AppDeps): Hono {
 
   r.delete("/api/github", async (c) => {
     await d.store.update(({ githubPat: _p, ...rest }) => rest);
+    return c.json({ ok: true });
+  });
+
+  // Whether OpenAI is connected, from the saved credentials alone, for pages that only need that.
+  r.get("/api/openai", async (c) => {
+    const saved = (await d.store.read()).openai;
+    return c.json(saved ? { connected: true, via: saved.kind, model: saved.model } : { connected: false });
+  });
+
+  r.post("/api/openai/key", async (c) => {
+    const { apiKey } = z.object({ apiKey: z.string().trim().min(1).max(500) }).parse(await c.req.json());
+    let models: string[];
+    try {
+      models = await d.clients.openaiWith(apiKey).listModels();
+    } catch (e) {
+      if (isAuthError(e)) {
+        throw new UserInputError("OpenAI rejected this key. Check that you copied all of it and that it hasn't been revoked.");
+      }
+      throw e;
+    }
+    const [model] = models;
+    if (!model) throw new UserInputError("This key can't use any OpenAI model that writes code. Check the project's model access.");
+    await d.store.update((cr) => ({ ...cr, openai: { kind: "apikey", apiKey, model } }));
+    return c.json({ ok: true, model });
+  });
+
+  // Sign in with ChatGPT: the browser shows the code from start, the user enters it at OpenAI,
+  // and the browser polls until OpenAI says it was entered. One sign-in waits at a time.
+  let device: { code: DeviceCode; startedAt: number } | null = null;
+
+  r.post("/api/openai/device", async (c) => {
+    const code = await requestDeviceCode(d.fetch);
+    device = { code, startedAt: Date.now() };
+    return c.json({ userCode: code.userCode, verificationUrl: code.verificationUrl, interval: code.interval });
+  });
+
+  r.post("/api/openai/device/poll", async (c) => {
+    const waiting = device;
+    if (!waiting || Date.now() - waiting.startedAt > DEVICE_CODE_TTL_MS) {
+      device = null;
+      throw new UserInputError("The sign-in code expired. Start again.", 409);
+    }
+    const tokens = await pollDeviceCode(d.fetch, waiting.code);
+    if (!tokens) return c.json({ status: "pending" });
+    if (device === waiting) device = null;
+    const [model] = await d.clients.chatgptWith(tokens).listModels();
+    if (!model) {
+      throw new UserInputError("Your ChatGPT plan doesn't include Codex models. Use a plan that includes Codex, or an API key.");
+    }
+    await d.store.update((cr) => ({ ...cr, openai: { kind: "chatgpt", model, ...tokens } }));
+    return c.json({ status: "connected", model });
+  });
+
+  r.post("/api/openai/model", async (c) => {
+    const { model } = z.object({ model: z.string().min(1) }).parse(await c.req.json());
+    const connected = await d.clients.openai();
+    if (!connected) throw new UserInputError("Connect OpenAI first.");
+    if (!(await connected.client.listModels()).includes(model)) throw new UserInputError(`You can't use ${model} with this sign-in.`);
+    await d.store.update((cr) => {
+      if (!cr.openai) throw new UserInputError("Connect OpenAI first.");
+      return { ...cr, openai: { ...cr.openai, model } };
+    });
+    return c.json({ ok: true });
+  });
+
+  r.delete("/api/openai", async (c) => {
+    await d.store.update(({ openai: _o, ...rest }) => rest);
     return c.json({ ok: true });
   });
 

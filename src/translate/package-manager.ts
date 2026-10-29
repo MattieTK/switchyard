@@ -34,9 +34,14 @@ export function installEnv(pm: PackageManager): Record<string, string> {
   }
 }
 
-// Adds packages to the project's dependencies.
-export function addCommand(pm: PackageManager, packages: readonly string[]): { cmd: string; args: string[] } {
-  return { cmd: pm, args: [pm === "npm" ? "install" : "add", ...packages] };
+// Adds packages to the project's dependencies, or its development dependencies with dev.
+export function addCommand(
+  pm: PackageManager,
+  packages: readonly string[],
+  o: { dev?: boolean } = {},
+): { cmd: string; args: string[] } {
+  const dev = o.dev ? [pm === "bun" ? "-d" : "-D"] : [];
+  return { cmd: pm, args: [pm === "npm" ? "install" : "add", ...dev, ...packages] };
 }
 
 // Runs a binary installed in the project's node_modules.

@@ -43,6 +43,15 @@ describe("buildEnvPlan", () => {
     expect(plan.entries[0]?.isSecret).toBe(false);
   });
 
+  it("only gives variables to the build when the Worker runs no server code", () => {
+    const { plan } = buildEnvPlan(
+      [v({ id: "1", key: "VITE_API", target: ["production", "preview", "development"], type: "plain" })],
+      RESERVED,
+      { runtime: false },
+    );
+    expect(plan.entries[0]?.destinations).toEqual(["production-build", "preview-build"]);
+  });
+
   it("keeps values out of the plan", () => {
     const { plan, values } = buildEnvPlan([v({ id: "1", key: "A", value: "hunter22" })], RESERVED);
     expect(JSON.stringify(plan)).not.toContain("hunter22");

@@ -4,6 +4,9 @@ import type { StorageFinding } from "../translate/storage.ts";
 export interface PrBodyInput {
   projectName: string;
   productionBranch: string;
+  // What the converter did, from the adapter.
+  summary: string;
+  hasSecrets: boolean;
   workersDevUrl?: string;
   hasCrons: boolean;
   skippedEnv: { key: string; reason: string }[];
@@ -17,8 +20,12 @@ const section = (title: string, lines: string[]) => (lines.length ? [`## ${title
 
 export function prBody(i: PrBodyInput): string {
   const changed = [
-    "- Converted the app to run on Cloudflare Workers with vinext (`vite.config.ts`, `cloudflare.config.ts` and new scripts in `package.json`).",
-    "- Declared the production environment variables as Worker secrets in `cloudflare.config.ts`. Their values were uploaded to Cloudflare and are not in this PR.",
+    `- ${i.summary}`,
+    ...(i.hasSecrets
+      ? [
+          "- Declared the production environment variables as Worker secrets in `cloudflare.config.ts`. Their values were uploaded to Cloudflare and are not in this PR.",
+        ]
+      : []),
     ...(i.hasCrons ? ["- Moved Vercel Cron Jobs to Cron Triggers, run by `switchyard-entry.ts`."] : []),
   ];
   const checks = [

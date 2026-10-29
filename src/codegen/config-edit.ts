@@ -6,6 +6,8 @@ export interface ConfigEdits {
   secretKeys: readonly string[];
   crons: readonly CronJob[];
   entrypoint?: string;
+  // Compatibility flags the Worker needs, added to any it already has.
+  compatibilityFlags?: readonly string[];
 }
 
 export class ConfigEditError extends Error {
@@ -33,6 +35,12 @@ export function editCloudflareConfig(source: string, edits: ConfigEdits): string
 
   worker.name = edits.workerName;
   if (edits.entrypoint) worker.entrypoint = edits.entrypoint;
+  if (edits.compatibilityFlags?.length) {
+    if (!worker.compatibilityFlags) worker.compatibilityFlags = [];
+    for (const flag of edits.compatibilityFlags) {
+      if (![...worker.compatibilityFlags].includes(flag)) worker.compatibilityFlags.push(flag);
+    }
+  }
 
   if (edits.secretKeys.length) {
     if (!worker.env) worker.env = {};

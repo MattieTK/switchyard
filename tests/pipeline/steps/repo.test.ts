@@ -61,6 +61,8 @@ describe("convertStep", () => {
       id: "nextjs",
       label: "Next.js",
       support: { level: "supported" },
+      serverRuntime: true,
+      prSummary: "Converted the app with vinext.",
       reservedBindings: ["ASSETS"],
       matches: () => true,
       async convert(c) {
@@ -101,6 +103,31 @@ describe("convertStep", () => {
     expect((await stat(join(repoDir, ".dev.vars"))).mode & 0o777).toBe(0o600);
     expect(await readFile(join(repoDir, ".gitignore"), "utf8")).toContain(".dev.vars");
     expect(ctx.outputs).toEqual({ projectDir: repoDir, warnings: '["heads up"]' });
+  });
+
+  it("gives the adapter the Worker name and Vercel settings, and leaves crons out without a Worker entry", async () => {
+    const repoDir = await makeTempDir();
+    const seen: unknown[] = [];
+    const adapter = {
+      convert: async (c: { dir: string; workerName?: string; settings?: unknown }) => {
+        seen.push([c.workerName, c.settings]);
+        await writeFile(join(c.dir, "cloudflare.config.ts"), VINEXT_CONFIG.replace('    entrypoint: "vinext/server/fetch-handler",\n', ""));
+        return { warnings: [], compatibilityFlags: ["nodejs_compat"] };
+      },
+    } as unknown as Adapter;
+    const settings = { framework: "gatsby", buildCommand: null, outputDirectory: "public" };
+    const { ctx } = makeContext({
+      plan: { settings, vercelJson: { crons: [{ path: "/api/cron", schedule: "0 * * * *" }], manual: [] } },
+      deps: { run: fakeRunner().run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    expect(seen).toEqual([["shop", settings]]);
+    const config = await readFile(join(repoDir, "cloudflare.config.ts"), "utf8");
+    expect(config).not.toContain("entrypoint");
+    expect(config).not.toContain("triggers");
+    expect(config).toContain('compatibilityFlags: ["nodejs_compat"]');
+    await expect(stat(join(repoDir, "switchyard-entry.ts"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("passes the chosen upgrade options to the adapter, and defaults for older job files", async () => {

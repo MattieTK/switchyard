@@ -67,4 +67,21 @@ describe("editCloudflareConfig", () => {
       ConfigEditError,
     );
   });
+
+  it("adds compatibility flags the Worker lacks", () => {
+    const plain = `import { defineConfig } from "cf/config";
+
+export default defineConfig({
+  worker: {
+    "name": "rr",
+    "compatibilityDate": "2026-10-23",
+    "entrypoint": "./workers/app.ts"
+  }
+});
+`;
+    const out = editCloudflareConfig(plain, { workerName: "rr", secretKeys: [], crons: [], compatibilityFlags: ["nodejs_compat"] });
+    expect(out).toMatch(/compatibilityFlags: \["nodejs_compat"\]/);
+    const again = editCloudflareConfig(VINEXT_CONFIG, { workerName: "x", secretKeys: [], crons: [], compatibilityFlags: ["nodejs_compat"] });
+    expect(again.match(/nodejs_compat/g)).toHaveLength(1);
+  });
 });

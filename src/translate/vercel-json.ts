@@ -38,6 +38,64 @@ const NOTES: Record<string, string> = {
   outputDirectory: "`outputDirectory` isn't used – the Cloudflare build output goes to .cloudflare/output.",
 };
 
+// Advice for apps whose routes are served by Workers static assets rather than Next.js. A key
+// mapped to null needs nothing: Workers static assets already serve /about from about.html.
+const ASSET_NOTES: Record<string, string | null> = {
+  cleanUrls: null,
+  trailingSlash:
+    "`trailingSlash` isn't translated – Workers static assets choose trailing slashes with `htmlHandling` under `assets` in cloudflare.config.ts.",
+  images: "`images` settings aren't translated – Vercel Image Optimization isn't available on Workers static assets.",
+};
+
+export interface VercelJsonOptions {
+  // Whether Next.js serves the routes, so routing rules belong in next.config.js.
+  nextjs: boolean;
+  // Whether the converter follows the build settings vercel.json can override, as static sites do.
+  buildSettings?: boolean;
+}
+
+// Settings vercel.json can set, which Vercel uses over the project's own.
+const BUILD_SETTINGS = ["framework", "buildCommand", "outputDirectory"] as const;
+
+// The build settings vercel.json overrides, leaving out any that aren't strings. A null
+// framework in vercel.json means Other, so it's kept.
+export function vercelJsonBuildSettings(
+  raw: string | null,
+): Partial<Record<(typeof BUILD_SETTINGS)[number], string | null>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw ?? "null");
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  const config = parsed as Record<string, unknown>;
+  return Object.fromEntries(
+    BUILD_SETTINGS.filter((k) => typeof config[k] === "string" || (k === "framework" && config[k] === null)).map((k) => [k, config[k]]),
+  );
+}
+
+// A rewrite of every path to the app's index.html, which single-page apps on Vercel use so
+// that client-side routes load. Workers static assets do the same with their
+// single-page-application setting, which Switchyard sets for these apps.
+export function isSpaFallback(rule: unknown): boolean {
+  if (typeof rule !== "object" || rule === null) return false;
+  const { source, destination, has, missing } = rule as Record<string, unknown>;
+  if (has !== undefined || missing !== undefined) return false;
+  const everything = ["/(.*)", "/:path*", "/:path(.*)", "/((?!api/.*).*)", "/((?!api).*)", "/(.+)", "/:match*"];
+  return typeof source === "string" && everything.includes(source) && (destination === "/index.html" || destination === "/");
+}
+
+// Whether vercel.json makes the site a single-page app with a catch-all rewrite.
+export function hasSpaFallback(raw: string | null): boolean {
+  try {
+    const rewrites = (JSON.parse(raw ?? "null") as { rewrites?: unknown } | null)?.rewrites;
+    return Array.isArray(rewrites) && rewrites.some(isSpaFallback);
+  } catch {
+    return false;
+  }
+}
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 // Returns the day for a number from 0 to 7 or a three-letter name, or null for anything else.
@@ -84,7 +142,7 @@ function translateSchedule(raw: string): string | null {
   return day === null ? null : head + day;
 }
 
-export function translateVercelJson(raw: string | null): VercelJsonTranslation {
+export function translateVercelJson(raw: string | null, options: VercelJsonOptions = { nextjs: true }): VercelJsonTranslation {
   if (raw === null) return { crons: [], manual: [] };
   let parsed: unknown;
   try {
@@ -111,6 +169,25 @@ export function translateVercelJson(raw: string | null): VercelJsonTranslation {
           manual.push(`Cron job ${JSON.stringify(c)} in vercel.json isn't valid, so it wasn't translated.`);
         }
       }
+      continue;
+    }
+    if (!options.nextjs && (key === "redirects" || key === "rewrites" || key === "headers") && Array.isArray(value)) {
+      const rules = key === "rewrites" ? value.filter((r) => !isSpaFallback(r)) : value;
+      const n = rules.length;
+      if (!n) continue;
+      manual.push(
+        key === "redirects"
+          ? `${plural(n, "redirect", "redirects")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in a \`_redirects\` file in the site's output folder, or in the app.`
+          : key === "headers"
+            ? `${plural(n, "header rule", "header rules")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in a \`_headers\` file in the site's output folder.`
+            : `${plural(n, "rewrite", "rewrites")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in the app, since Workers static assets don't rewrite paths.`,
+      );
+      continue;
+    }
+    if (options.buildSettings && (BUILD_SETTINGS as readonly string[]).includes(key)) continue;
+    if (!options.nextjs && Object.hasOwn(ASSET_NOTES, key)) {
+      const note = ASSET_NOTES[key];
+      if (note) manual.push(note);
       continue;
     }
     if ((key === "redirects" || key === "rewrites" || key === "headers") && Array.isArray(value)) {

@@ -1,6 +1,11 @@
 // Pinned vinext release used for Next.js conversions.
 export const VINEXT_VERSION = "1.1.0";
 
+// Pinned cf release that sets up Vite and React Router apps (cf init), and the Wrangler release
+// static sites build with. The projects keep these as development dependencies.
+export const CF_VERSION = "1.0.0-beta.25";
+export const WRANGLER_VERSION = "4.155.0";
+
 // Next.js release older apps are upgraded to before conversion, since vinext targets Next.js 16.
 // The same version of @next/codemod runs the upgrade.
 export const NEXT_UPGRADE_VERSION = "16.4.1";

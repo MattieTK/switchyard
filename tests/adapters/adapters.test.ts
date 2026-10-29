@@ -2,7 +2,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextjsAdapter } from "../../src/adapters/nextjs.ts";
-import { adapterById, pickAdapter, supportForFramework } from "../../src/adapters/registry.ts";
+import { adapterById, frameworkName, pickAdapter, supportForFramework } from "../../src/adapters/registry.ts";
+import type { PackageJson } from "../../src/translate/package-json.ts";
 import { fakeRunner } from "../helpers/fake-runner.ts";
 import { makeTempDir } from "../helpers/tmp.ts";
 
@@ -610,14 +611,53 @@ export default defineConfig({
 });
 
 describe("registry", () => {
-  it("picks the Next.js adapter and reports others as unsupported for now", () => {
-    expect(pickAdapter({ vercelFramework: "nextjs", packageJson: null }).adapter?.id).toBe("nextjs");
-    expect(pickAdapter({ vercelFramework: "sveltekit", packageJson: {} })).toEqual({
-      adapter: null,
-      support: { level: "unsupported", reason: "sveltekit projects aren't supported yet" },
-    });
-    expect(supportForFramework(null)).toEqual({ level: "unsupported", reason: "Vercel didn't detect a framework" });
+  const pick = (vercelFramework: string | null, packageJson: PackageJson | null = null) =>
+    pickAdapter({ vercelFramework, packageJson }).adapter?.id ?? null;
+
+  it("picks the adapter for each framework, most specific first", () => {
+    expect(pick("nextjs")).toBe("nextjs");
+    expect(pick(null, { dependencies: { next: "16", vite: "7" } })).toBe("nextjs");
+    expect(pick("react-router")).toBe("react-router");
+    expect(pick(null, { devDependencies: { "@react-router/dev": "7", vite: "7" } })).toBe("react-router");
+    expect(pick("vite")).toBe("vite");
+    expect(pick(null, { devDependencies: { vite: "7" }, dependencies: { "react-router": "7" } })).toBe("vite");
+    expect(pick("create-react-app")).toBe("static");
+    expect(pick("gatsby", { dependencies: { gatsby: "5" } })).toBe("static");
+    expect(pick(null, { scripts: { build: "eleventy" } })).toBe("static");
     expect(adapterById("nextjs")).toBe(pickAdapter({ vercelFramework: "nextjs", packageJson: null }).adapter);
     expect(adapterById("nope")).toBeNull();
+  });
+
+  it("says why frameworks it can't move yet are left out", () => {
+    expect(pickAdapter({ vercelFramework: "sveltekit-1", packageJson: {} })).toEqual({
+      adapter: null,
+      support: { level: "unsupported", reason: "The Cloudflare build tool (cf) doesn't support SvelteKit yet." },
+    });
+    expect(supportForFramework("remix").reason).toContain("React Router 7");
+    expect(supportForFramework("blitzjs")).toEqual({ level: "unsupported", reason: "blitzjs projects aren't supported yet." });
+    // Vercel saw no framework, but cf would find Astro and build it.
+    expect(pickAdapter({ vercelFramework: null, packageJson: { dependencies: { astro: "5" } } }).support).toEqual({
+      level: "unsupported",
+      reason: "This project uses Astro, which Switchyard can't move yet.",
+    });
+  });
+
+  it("says when cf would build a static preset as another framework", () => {
+    expect(pickAdapter({ vercelFramework: "storybook", packageJson: { devDependencies: { vite: "7" } } }).support.reason).toBe(
+      "This Storybook project depends on Vite, so the Cloudflare build tool (cf) would build it as a Vite app instead. Switchyard can't move it yet.",
+    );
+  });
+
+  it("marks projects without a framework as partly supported until the plan checks them", () => {
+    expect(supportForFramework(null)).toMatchObject({ level: "partial" });
+    expect(supportForFramework("vite")).toEqual({ level: "supported" });
+    expect(supportForFramework("gatsby")).toEqual({ level: "supported" });
+  });
+
+  it("names frameworks as people know them", () => {
+    expect(frameworkName("create-react-app")).toBe("Create React App");
+    expect(frameworkName("sveltekit-1")).toBe("SvelteKit");
+    expect(frameworkName("blitzjs")).toBe("blitzjs");
+    expect(frameworkName(null)).toBeNull();
   });
 });

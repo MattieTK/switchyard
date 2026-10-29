@@ -19,6 +19,9 @@ export interface VercelProject {
   name: string;
   framework: string | null;
   rootDirectory: string | null;
+  // Overrides of the framework preset's build command and output folder, or null for the preset's.
+  buildCommand?: string | null;
+  outputDirectory?: string | null;
   link?: { type: string; org?: string; repo?: string; repoId?: number; productionBranch?: string };
 }
 

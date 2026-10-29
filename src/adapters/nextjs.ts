@@ -1,24 +1,17 @@
 import { existsSync } from "node:fs";
 import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { satisfies, validRange } from "semver";
-import { CLOUDFLARE_BUILD_SCRIPT, cloudflareBuildScript } from "../codegen/build-script.ts";
+import { NEXT_BUILD } from "../codegen/build-script.ts";
 import { shimMissingExports } from "../codegen/config-edit.ts";
-import { preapproveYarnPackages, quarantinedPackages } from "../codegen/toolchain-files.ts";
 import { NEXT_UPGRADE_VERSION, VINEXT_VERSION } from "../config.ts";
 import { type CommandRunner, CommandError, type RunResult, runOrThrow } from "../exec.ts";
-import { allDependencies, type PackageJson, parsePackageJson } from "../translate/package-json.ts";
-import {
-  addCommand,
-  dlxCommand,
-  installCommand,
-  installEnv,
-  type PackageManager,
-  runScriptCommand,
-} from "../translate/package-manager.ts";
+import { allDependencies, type PackageJson } from "../translate/package-json.ts";
+import { addCommand, dlxCommand, installCommand, installEnv, type PackageManager } from "../translate/package-manager.ts";
 import { planFlaggedUpdates, type Release } from "./flagged-packages.ts";
 import { type IncompatibleDependency, incompatibleDependencies, incompatibleDependencyWarning } from "./next-codemod-output.ts";
+import { detectedFrameworks, readPackageJson, runInstall, writeCloudflareBuildScript } from "./shared.ts";
 import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
@@ -117,82 +110,6 @@ async function withYarn1Wrapper<T>(
   }
 }
 
-async function readPackageJson(dir: string): Promise<PackageJson | null> {
-  try {
-    return parsePackageJson(await readFile(join(dir, "package.json"), "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return null;
-  }
-}
-
-// The nearest file called name from dir up to the repository root, or null.
-function findUp(dir: string, name: string): string | null {
-  for (let folder = dir; ; folder = dirname(folder)) {
-    const path = join(folder, name);
-    if (existsSync(path)) return path;
-    if (existsSync(join(folder, ".git")) || dirname(folder) === folder) return null;
-  }
-}
-
-// How many times vinext init runs again after Yarn holds packages back for their age.
-// Yarn stops at the first package it holds back, so each run can find one more.
-const MAX_QUARANTINE_RETRIES = 8;
-
-// The npmPreapprovedPackages entry for a package Yarn held back. A scope belongs to one
-// publisher, whose packages tend to be released together, so the whole scope is approved.
-function preapprovalPattern(name: string): string {
-  return name.startsWith("@") ? `${name.split("/")[0]}/*` : name;
-}
-
-// Runs a command that installs packages. Yarn 4 holds back releases newer than
-// npmMinimalAgeGate, and the conversion installs packages that are often only days old
-// (Cloudflare's tooling, or the latest release of a flagged package), so the install can
-// fail. The packages Yarn names are added to npmPreapprovedPackages, package.json and
-// yarn.lock go back to how they were, and the command runs again.
-async function runInstall(
-  ctx: ConvertContext,
-  command: { cmd: string; args: string[] },
-  env: Record<string, string>,
-  warnings: string[],
-  label: string,
-): Promise<RunResult> {
-  const read = (path: string | null) => (path ? readFile(path, "utf8").catch(() => null) : Promise.resolve(null));
-  const manifestPath = join(ctx.dir, "package.json");
-  const lockPath = findUp(ctx.dir, "yarn.lock");
-  const [manifest, lock] = await Promise.all([read(manifestPath), read(lockPath)]);
-  const yarnrc = findUp(ctx.dir, ".yarnrc.yml") ?? join(ctx.dir, ".yarnrc.yml");
-  const approved: string[] = [];
-  for (let attempt = 0; ; attempt++) {
-    const result = await ctx.run(command.cmd, command.args, { cwd: ctx.dir, onLine: ctx.log, env });
-    if (result.code === 0) {
-      if (approved.length) {
-        warnings.push(
-          `Switchyard added ${approved.join(", ")} to npmPreapprovedPackages in ${relative(ctx.dir, yarnrc)}, because Yarn held back these releases as newer than npmMinimalAgeGate and the conversion needs them. Remove the entries if you'd rather wait for those releases to age.`,
-        );
-      }
-      return result;
-    }
-    const quarantined = ctx.pm === "yarn" ? quarantinedPackages(result.output) : [];
-    const blocked = [...new Set(quarantined.map(preapprovalPattern))].filter((p) => !approved.includes(p));
-    if (!blocked.length || attempt >= MAX_QUARANTINE_RETRIES) throw new CommandError(command.cmd, command.args, result);
-    const updated = preapproveYarnPackages((await read(yarnrc)) ?? "", blocked);
-    if (!updated) {
-      ctx.log(
-        `Warning: Yarn held back ${blocked.join(", ")} as newer than npmMinimalAgeGate. npmPreapprovedPackages in ${relative(ctx.dir, yarnrc)} is an inline list Switchyard can't extend, so add them to it and retry.`,
-      );
-      throw new CommandError(command.cmd, command.args, result);
-    }
-    await writeFile(yarnrc, updated.text);
-    if (manifest !== null) await writeFile(manifestPath, manifest);
-    if (lockPath && lock !== null) await writeFile(lockPath, lock);
-    approved.push(...blocked);
-    ctx.log(
-      `Yarn held back ${blocked.join(", ")} as too new, so Switchyard added ${blocked.length === 1 ? "it" : "them"} to npmPreapprovedPackages and is running ${label} again.`,
-    );
-  }
-}
-
 interface InstalledPackage {
   version?: string;
   peerDependencies?: Record<string, string>;
@@ -279,26 +196,6 @@ async function updateFlaggedPackages(
   return plan.warnings;
 }
 
-// Writes the build:cloudflare script when the app's build runs steps before next build.
-// Returns the script's name, or null when cf build alone does the same.
-async function writeCloudflareBuildScript(ctx: ConvertContext, warnings: string[]): Promise<string | null> {
-  const path = join(ctx.dir, "package.json");
-  const manifest = JSON.parse(await readFile(path, "utf8").catch(() => "{}")) as { scripts?: Record<string, string> };
-  const run = (name: string) => {
-    const c = runScriptCommand(ctx.pm, name);
-    return [c.cmd, ...c.args].join(" ");
-  };
-  const result = cloudflareBuildScript(manifest.scripts, run);
-  warnings.push(...result.warnings);
-  if (!result.script) return null;
-  manifest.scripts = { ...manifest.scripts, [CLOUDFLARE_BUILD_SCRIPT]: result.script };
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
-  warnings.push(
-    `cf build doesn't run the app's build script, so Switchyard added a ${CLOUDFLARE_BUILD_SCRIPT} script (\`${result.script}\`) that keeps its other build steps, and Workers Builds runs that script.`,
-  );
-  return CLOUDFLARE_BUILD_SCRIPT;
-}
-
 const NEXT_CONFIG_FILES = ["next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs", "next.config.mts"];
 // output: "standalone", including conditional values such as `ci ? undefined : "standalone"`,
 // and assignments such as nextConfig.output = "standalone".
@@ -363,19 +260,7 @@ async function standaloneOutsideCloudflare(dir: string): Promise<string | null> 
 
 // cf picks the framework to build itself, and cloudflare.config.ts can't name it. With one
 // of these dependencies beside Next.js and Vite, it finds more than one framework and stops.
-// Checked against cf 1.0.0-beta.20, which reads them from package.json.
-const CF_DETECTED_FRAMEWORKS: Readonly<Record<string, string>> = {
-  hono: "Hono",
-  astro: "Astro",
-  nuxt: "Nuxt",
-  "@sveltejs/kit": "SvelteKit",
-  "@builder.io/qwik": "Qwik",
-  "@solidjs/start": "Solid Start",
-  "@tanstack/react-start": "TanStack Start",
-  vike: "Vike",
-  waku: "Waku",
-  "@analogjs/platform": "Analog",
-};
+const NOT_CONFLICTING = ["next", "vite", "@react-router/dev", "@angular/core"];
 
 // The upgrade applies only the migrations Next.js 16 requires unless the user opted into more.
 function upgradeFlags(options: AdapterOptions): string[] {
@@ -418,8 +303,11 @@ async function readPackageJsonScripts(dir: string): Promise<Record<string, strin
 
 export const nextjsAdapter: Adapter = {
   id: "nextjs",
-  label: "Next.js (vinext)",
+  label: "Next.js with vinext",
   support: { level: "supported" },
+  serverRuntime: true,
+  prSummary:
+    "Converted the app to run on Cloudflare Workers with vinext (`vite.config.ts`, `cloudflare.config.ts` and new scripts in `package.json`).",
   reservedBindings: ["ASSETS", "IMAGES", "VINEXT_KV_CACHE"],
   matches: (input) => input.vercelFramework === "nextjs" || "next" in allDependencies(input.packageJson),
   upgradeFor(packageJson) {
@@ -435,8 +323,7 @@ export const nextjsAdapter: Adapter = {
         `This app uses Next.js ${old.major}. Switchyard will upgrade it to Next.js ${NEXT_UPGRADE_VERSION} with the official Next.js codemods before converting, because vinext needs Next.js 16. Only the required migrations run unless you choose more under Upgrade options. Upgrading across major versions can change how the app behaves, so review the pull request and test the preview before switching traffic.`,
       );
     }
-    const dependencies = allDependencies(packageJson);
-    const others = Object.entries(CF_DETECTED_FRAMEWORKS).filter(([name]) => name in dependencies);
+    const others = detectedFrameworks(packageJson, NOT_CONFLICTING);
     if (others.length) {
       const names = others.map(([, framework]) => framework).join(", ");
       warnings.push(
@@ -502,7 +389,7 @@ export const nextjsAdapter: Adapter = {
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
     if (standaloneWarning) warnings.push(standaloneWarning);
     warnings.push(...(await updateVinextPeers(ctx, env)));
-    const buildScript = await writeCloudflareBuildScript(ctx, warnings);
+    const buildScript = await writeCloudflareBuildScript(ctx, warnings, NEXT_BUILD);
     return { baseEntrypoint: "vinext/server/fetch-handler", warnings, ...(buildScript ? { buildScript } : {}) };
   },
 };

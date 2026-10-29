@@ -26,7 +26,7 @@ describe("Next.js fixture", () => {
     });
 
     const crons = [{ path: "/api/cron", schedule: "0 * * * *" }];
-    await writeFile(join(dir, CRON_ENTRY_FILE), cronEntrySource(result.baseEntrypoint, crons));
+    await writeFile(join(dir, CRON_ENTRY_FILE), cronEntrySource(result.baseEntrypoint ?? "", crons));
     const configPath = join(dir, "cloudflare.config.ts");
     await writeFile(
       configPath,

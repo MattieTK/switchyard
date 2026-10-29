@@ -105,4 +105,14 @@ describe("cloudflareBuildScript with scripts that call scripts", () => {
     expect(r.script).toBeNull();
     expect(r.warnings[0]).toContain("(`npm run sitemap`)");
   });
+
+  it("replaces another framework's build command when given one", () => {
+    const vite = { command: "vite build", label: "Vite", pattern: /^(.*?)\bvite\s+build\b.*$/ };
+    expect(cloudflareBuildScript({ build: "vite build" }, run, vite)).toEqual({ script: null, warnings: [] });
+    expect(cloudflareBuildScript({ build: "tsc -b && vite build --mode production" }, run, vite).script).toBe("tsc -b && cf build");
+    const after = cloudflareBuildScript({ build: "vite build && cp dist/index.html dist/404.html" }, run, vite);
+    expect(after.warnings[0]).toContain("after `vite build`");
+    expect(after.warnings[0]).toContain("Vite's own build output");
+    expect(cloudflareBuildScript({ build: "next build" }, run, vite).warnings[0]).toContain("couldn't find `vite build`");
+  });
 });

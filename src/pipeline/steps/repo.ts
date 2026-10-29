@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { NO_PROJECT_SETTINGS } from "../../adapters/types.ts";
 import { gitAuthEnv } from "../../auth/github.ts";
 import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
@@ -270,6 +271,8 @@ export const convertStep: Step = {
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
+      workerName: plan.workerName,
+      settings: plan.settings ?? NO_PROJECT_SETTINGS,
       pm: plan.packageManager,
       run: ctx.deps.run,
       log: ctx.log,
@@ -300,8 +303,15 @@ export const convertStep: Step = {
     const source = await readFile(configPath, "utf8").catch(() => {
       throw new Error("The converter didn't create cloudflare.config.ts.");
     });
-    const crons = plan.vercelJson.crons;
-    if (crons.length) await writeFile(join(dir, CRON_ENTRY_FILE), cronEntrySource(result.baseEntrypoint, crons));
+    // Cron routes need the app's own Worker entry to call. The plan leaves crons out for
+    // Workers that only serve static assets, so this is only a safeguard.
+    const crons = result.baseEntrypoint ? plan.vercelJson.crons : [];
+    if (plan.vercelJson.crons.length && !crons.length) {
+      ctx.log("Warning: the converted app has no Worker entry for cron jobs to call, so they weren't moved.");
+    }
+    if (result.baseEntrypoint && crons.length) {
+      await writeFile(join(dir, CRON_ENTRY_FILE), cronEntrySource(result.baseEntrypoint, crons));
+    }
     await writeFile(
       configPath,
       editCloudflareConfig(source, {
@@ -309,6 +319,7 @@ export const convertStep: Step = {
         secretKeys: secretKeys(plan.env),
         crons,
         entrypoint: crons.length ? `./${CRON_ENTRY_FILE}` : undefined,
+        ...(result.compatibilityFlags ? { compatibilityFlags: result.compatibilityFlags } : {}),
       }),
     );
 

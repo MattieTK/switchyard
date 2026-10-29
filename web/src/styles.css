@@ -342,3 +342,4 @@ td .muted { font-size: 0.85rem; }
   .facts { grid-template-columns: 1fr; gap: 0.15rem; }
   .facts dd { margin-bottom: 0.5rem; }
 }
+.support-reason { max-width: 22rem; margin-top: 0.25rem; }

@@ -20,8 +20,16 @@ describe("project routes", () => {
     } as unknown as VercelClient;
     const { req } = await makeApp({ clients: { vercel: async () => vercel } as unknown as ClientFactory });
     expect(await (await req("/api/projects")).json()).toEqual([
-      { id: "p1", name: "shop", framework: "nextjs", repo: "acme/shop", productionBranch: "main", support: { level: "supported" } },
-      { id: "p2", name: "blog", framework: "astro", repo: null, productionBranch: null, support: { level: "unsupported", reason: "astro projects aren't supported yet" } },
+      { id: "p1", name: "shop", framework: "nextjs", frameworkName: "Next.js", repo: "acme/shop", productionBranch: "main", support: { level: "supported" } },
+      {
+        id: "p2",
+        name: "blog",
+        framework: "astro",
+        frameworkName: "Astro",
+        repo: null,
+        productionBranch: null,
+        support: { level: "unsupported", reason: "The Cloudflare build tool (cf) can't build Astro projects yet." },
+      },
     ]);
   });
 

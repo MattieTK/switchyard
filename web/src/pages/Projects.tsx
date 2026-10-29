@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Job } from "../../../src/pipeline/types.ts";
 import type { ProjectSummary } from "../../../src/server/routes/jobs.ts";
 import { api, ApiFailure } from "../api.ts";
 import { go } from "../router.ts";
-import { Button, Callout, Card, Checkbox, Hint, Loading, Pill } from "../ui/controls.tsx";
+import { Button, Callout, Card, Checkbox, Loading, Pill, TextField } from "../ui/controls.tsx";
 import { ArrowIcon } from "../ui/icons.tsx";
 import { MiniChain } from "../ui/StepChain.tsx";
 
@@ -12,6 +12,19 @@ const SUPPORT = {
   partial: { label: "Partial", tone: "warn" },
   unsupported: { label: "Not yet", tone: "neutral" },
 } as const;
+
+// Projects Switchyard can move come first, keeping Vercel's order within each group.
+const SUPPORT_ORDER = { supported: 0, partial: 1, unsupported: 2 } as const;
+
+// The search box appears once the list is long enough to need it.
+const SEARCH_FROM = 8;
+
+const selectable = (p: ProjectSummary) => p.support.level !== "unsupported" && p.repo !== null;
+
+function matchesQuery(p: ProjectSummary, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return !q || [p.name, p.frameworkName, p.repo].some((field) => field?.toLowerCase().includes(q));
+}
 
 const JOB_STATUS = {
   queued: { label: "Queued", tone: "neutral" },
@@ -26,6 +39,7 @@ export function Projects() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<ApiFailure | null>(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     api<ProjectSummary[]>("/api/projects")
@@ -35,6 +49,17 @@ export function Projects() {
       .then(setJobs)
       .catch(() => setJobs([]));
   }, []);
+
+  const sorted = useMemo(
+    () =>
+      projects
+        ?.map((p, i) => ({ p, i }))
+        .sort((a, b) => SUPPORT_ORDER[a.p.support.level] - SUPPORT_ORDER[b.p.support.level] || a.i - b.i)
+        .map(({ p }) => p) ?? null,
+    [projects],
+  );
+  const shown = sorted?.filter((p) => matchesQuery(p, query)) ?? [];
+  const movable = projects?.filter(selectable).length ?? 0;
 
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const planSelected = () => {
@@ -61,13 +86,21 @@ export function Projects() {
         {projects && projects.length === 0 && <div className="empty">This Vercel token can't see any projects.</div>}
         {projects && projects.length > 0 && (
           <Card
-            title="Vercel projects"
+            title={`Vercel projects (${movable} of ${projects.length} can move)`}
             aside={
               <Button variant="primary" disabled={!selected.length} onClick={planSelected}>
                 Review plan{selected.length > 1 ? `s (${selected.length})` : ""} <ArrowIcon />
               </Button>
             }
           >
+            {projects.length >= SEARCH_FROM && (
+              <TextField
+                label="Find a project"
+                placeholder="Name, framework or repository"
+                value={query}
+                onValueChange={setQuery}
+              />
+            )}
             <div className="table-wrap">
               <table>
                 <thead>
@@ -80,8 +113,15 @@ export function Projects() {
                   </tr>
                 </thead>
                 <tbody>
-                  {projects.map((p) => {
-                    const disabled = p.support.level === "unsupported" || !p.repo;
+                  {shown.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="muted">
+                        No project matches “{query}”.
+                      </td>
+                    </tr>
+                  )}
+                  {shown.map((p) => {
+                    const disabled = !selectable(p);
                     const support = SUPPORT[p.support.level];
                     return (
                       <tr key={p.id} data-selected={selected.includes(p.id) || undefined}>
@@ -96,7 +136,7 @@ export function Projects() {
                         <td>
                           <strong>{p.name}</strong>
                         </td>
-                        <td>{p.framework ?? <span className="muted">–</span>}</td>
+                        <td>{p.frameworkName ?? <span className="muted">None detected</span>}</td>
                         <td>
                           {p.repo ? (
                             <>
@@ -108,9 +148,10 @@ export function Projects() {
                           )}
                         </td>
                         <td>
-                          <Hint text={p.support.reason}>
-                            <Pill tone={support.tone}>{support.label}</Pill>
-                          </Hint>
+                          <Pill tone={support.tone}>{support.label}</Pill>
+                          {p.support.level !== "supported" && p.support.reason && (
+                            <div className="muted support-reason">{p.support.reason}</div>
+                          )}
                         </td>
                       </tr>
                     );

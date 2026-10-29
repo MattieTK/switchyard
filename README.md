@@ -7,14 +7,23 @@ Switchyard moves projects from Vercel to Cloudflare Workers. It runs on your mac
 3. Deploys it to your Cloudflare account.
 4. Connects Workers Builds, so later pushes deploy to Cloudflare.
 
-At this point it supports Next.js projects linked to a GitHub repository. They are converted with [vinext](https://github.com/cloudflare/vinext) and built with `cf`, the Cloudflare CLI.
+It moves projects linked to a GitHub repository, and builds them with `cf`, the Cloudflare CLI:
+
+| Project | How it moves |
+| --- | --- |
+| Next.js | Converted with [vinext](https://github.com/cloudflare/vinext). Apps older than Next.js 16 are upgraded first. |
+| React Router 7 or later (framework mode) | Set up with `cf init`, which adds the Cloudflare Vite plugin and a Worker entry. |
+| Vite apps, such as React, Vue, Svelte, Solid or Preact single-page apps | Set up with `cf init`, and served as static assets with a single-page fallback. |
+| Static sites: Create React App, Gatsby, Docusaurus, Vue CLI, Eleventy, Hexo, Ember, Parcel, Storybook and others, or no framework at all | Built as Vercel built them, then the output folder is served as static assets. |
+
+The projects list says why a project can't move yet, for example SvelteKit, Nuxt, Astro and Angular, which `cf` can't build at this point, and Remix 2, which needs upgrading to React Router 7 first.
 
 ## What it changes
 
 - **GitHub:** pushes a `cloudflare-migration` branch and opens a pull request. Nothing else is pushed.
 - **Cloudflare:**
-  - Creates a Worker, with your production variables stored as secrets.
-  - Creates a KV namespace for vinext's cache, when you choose KV caching (the default).
+  - Creates a Worker. For apps that run server code (Next.js and React Router), your production variables are stored as its secrets. Vite apps and static sites only use variables while they build, so they go to Workers Builds alone.
+  - Creates a KV namespace for vinext's cache, for Next.js apps with KV caching (the default).
   - Connects the repository to Workers Builds.
   - Creates two triggers:
     - production, on your production branch;
@@ -65,10 +74,11 @@ Apps on Next.js older than 16 are upgraded with the official Next.js codemods, b
 
 ### What the pull request can contain
 
-Besides vinext's own files (`cloudflare.config.ts`, `vite.config.ts` and the package changes), Switchyard can make these changes, and the pull request lists each one it made:
+Besides the converter's own files (`cloudflare.config.ts`, the package changes, and `vite.config.ts` for vinext and `cf init` or `wrangler.config.ts` for static sites), Switchyard can make these changes, and the pull request lists each one it made:
 
-- `switchyard-entry.ts`, which runs your `vercel.json` cron routes as Cron Triggers.
-- A `build:cloudflare` script that keeps the steps your build runs before `next build`, such as `prisma generate`. Workers Builds runs it.
+- `switchyard-entry.ts`, which runs your `vercel.json` cron routes as Cron Triggers. Static sites and Vite apps run no server code for crons to call, so the plan lists their crons as left behind.
+- A `build:cloudflare` script that keeps the steps your build runs before the framework's build, such as `prisma generate` before `next build` or `tsc -b` before `vite build`. For static sites, it runs your build and then `cf build`. Workers Builds runs it.
+- `@vercel/react-router`'s preset removed from `react-router.config.ts`, and Node.js compatibility turned on, so loaders keep reading `process.env`.
 - `.nvmrc` or `.node-version` raised to 22 when they pin an older Node.js, because `cf` needs 22 or later.
 - `"packageManager": "yarn@1.22.22"` for projects with a Yarn 1 lockfile, so Workers Builds keeps using Yarn 1.
 - Lockfiles of package managers the project doesn't use, removed.
@@ -107,6 +117,8 @@ SWITCHYARD_HOME=~/switchyard-dev SWITCHYARD_PORT=4418 SWITCHYARD_CLOUDFLARE_CLIE
 - **"The web UI hasn't been built yet":** start Switchyard with `pnpm start`, which builds it, or run `pnpm build:web` first.
 - **"Install the GitHub App":** Cloudflare needs its GitHub App on the repository's account or organisation before it can build. Install the app, then select Check again.
 - **"No Workers Builds token":** in the Cloudflare dashboard, open any Worker, go to Settings → Builds and connect a repository once. Then select Check again.
+- **Vercel Functions and Routing Middleware:** files in a top-level `api/` folder and a top-level `middleware.ts` run on Vercel beside any framework. Switchyard doesn't move them yet, and the plan warns when a project has them.
+- **A static site served from its repository folder:** Switchyard deploys a static site from a folder of its own. Move the files into `public/`, or set an Output Directory in the Vercel project's settings.
 - **Sensitive variables:** Vercel never returns their values. Enter them on the plan screen, or skip them and set them later.
 - **npm projects:** if vinext's dependencies want a newer React than your project pins, Switchyard adds `legacy-peer-deps=true` to `.npmrc` and says so in the pull request.
 - **A Node.js version manager that switches per project:** some, such as Volta or fnm with automatic switching, run a project's commands on the Node.js version it pins. If that's older than 22, the conversion can fail in `vinext init`. Run Switchyard where Node.js 22 or later is used for every folder, or raise the project's pin first.
@@ -115,7 +127,7 @@ SWITCHYARD_HOME=~/switchyard-dev SWITCHYARD_PORT=4418 SWITCHYARD_CLOUDFLARE_CLIE
 
 ```bash
 pnpm test            # unit tests
-pnpm test:fixtures   # converts and builds a real Next.js app with vinext and cf (slow)
+pnpm test:fixtures   # converts and builds real Next.js, Vite and static apps with cf (slow)
 pnpm typecheck
 pnpm dev             # restarts the server when its code changes
 pnpm dev:web         # rebuilds the web UI when it changes; run beside pnpm dev

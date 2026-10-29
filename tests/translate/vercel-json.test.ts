@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { translateVercelJson } from "../../src/translate/vercel-json.ts";
+import { hasSpaFallback, isSpaFallback, translateVercelJson, vercelJsonBuildSettings } from "../../src/translate/vercel-json.ts";
 
 describe("translateVercelJson", () => {
   it("returns nothing for a missing file", () => {
@@ -100,5 +100,63 @@ describe("translateVercelJson", () => {
         expect(t.manual[0]).toContain("isn't valid");
       },
     );
+  });
+
+  describe("for apps Next.js doesn't serve", () => {
+    const assets = { nextjs: false };
+
+    it("points routing rules at Workers static assets and skips the single-page fallback", () => {
+      const t = translateVercelJson(
+        JSON.stringify({
+          redirects: [{ source: "/a", destination: "/b" }],
+          headers: [{ source: "/(.*)", headers: [] }, { source: "/x", headers: [] }],
+          rewrites: [{ source: "/(.*)", destination: "/index.html" }],
+          cleanUrls: true,
+          trailingSlash: false,
+        }),
+        assets,
+      );
+      expect(t.manual).toEqual([
+        "1 redirect in vercel.json – recreate it in a `_redirects` file in the site's output folder, or in the app.",
+        "2 header rules in vercel.json – recreate them in a `_headers` file in the site's output folder.",
+        expect.stringContaining("`trailingSlash` isn't translated"),
+      ]);
+    });
+
+    it("still lists rewrites other than the fallback", () => {
+      const t = translateVercelJson(
+        JSON.stringify({ rewrites: [{ source: "/:path*", destination: "/" }, { source: "/api/:p", destination: "https://api.example.com/:p" }] }),
+        assets,
+      );
+      expect(t.manual).toEqual([expect.stringContaining("1 rewrite in vercel.json – recreate it in the app")]);
+    });
+  });
+
+  it("recognises catch-all rewrites to index.html", () => {
+    expect(isSpaFallback({ source: "/(.*)", destination: "/index.html" })).toBe(true);
+    expect(isSpaFallback({ source: "/:path*", destination: "/" })).toBe(true);
+    expect(isSpaFallback({ source: "/blog/(.*)", destination: "/index.html" })).toBe(false);
+    expect(isSpaFallback({ source: "/(.*)", destination: "/index.html", has: [{ type: "host", value: "x" }] })).toBe(false);
+    expect(isSpaFallback(null)).toBe(false);
+    expect(hasSpaFallback('{"rewrites":[{"source":"/(.*)","destination":"/index.html"}]}')).toBe(true);
+    expect(hasSpaFallback("{nope")).toBe(false);
+    expect(hasSpaFallback(null)).toBe(false);
+  });
+
+  it("reads the build settings vercel.json overrides", () => {
+    expect(vercelJsonBuildSettings('{"buildCommand":"npm run docs","outputDirectory":"site","framework":null,"cleanUrls":true}')).toEqual({
+      framework: null,
+      buildCommand: "npm run docs",
+      outputDirectory: "site",
+    });
+    expect(vercelJsonBuildSettings('{"buildCommand":3}')).toEqual({});
+    expect(vercelJsonBuildSettings(null)).toEqual({});
+    expect(vercelJsonBuildSettings("[")).toEqual({});
+  });
+
+  it("doesn't list build settings the converter follows", () => {
+    const raw = '{"buildCommand":"npm run docs","outputDirectory":"site"}';
+    expect(translateVercelJson(raw, { nextjs: false, buildSettings: true }).manual).toEqual([]);
+    expect(translateVercelJson(raw, { nextjs: false }).manual).toHaveLength(2);
   });
 });

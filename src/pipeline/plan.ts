@@ -1,5 +1,5 @@
 import { pickAdapter } from "../adapters/registry.ts";
-import type { NextCachePreset, Support } from "../adapters/types.ts";
+import type { NextCachePreset, ProjectSettings, Support } from "../adapters/types.ts";
 import { readOnlyAccountMessage, type CloudflareClient, type CloudflareZone } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
 import type { VercelClient, VercelDomain } from "../clients/vercel.ts";
@@ -15,7 +15,7 @@ import {
   pnpmSwitchOffer,
 } from "../translate/package-manager.ts";
 import { detectStorage, type StorageFinding } from "../translate/storage.ts";
-import { translateVercelJson, type VercelJsonTranslation } from "../translate/vercel-json.ts";
+import { translateVercelJson, type VercelJsonTranslation, vercelJsonBuildSettings } from "../translate/vercel-json.ts";
 
 export interface DomainPlan {
   name: string;
@@ -48,6 +48,8 @@ export interface MigrationPlan {
   repo: { owner: string; name: string; productionBranch: string; rootDirectory: string } | null;
   packageManager: PackageManager;
   adapterId: string | null;
+  // The adapter's name for people, such as "Static site". Older job files lack it.
+  adapterLabel?: string;
   support: Support;
   nextCache: NextCachePreset;
   env: EnvPlan;
@@ -62,6 +64,8 @@ export interface MigrationPlan {
   upgrade?: { from: string; to: string } | null;
   pnpmSwitch?: PnpmSwitchOffer | null;
   options?: PlanOptions;
+  // The Vercel build settings the converter follows. Older job files lack them.
+  settings?: ProjectSettings;
   // The project's package manager before the user chose to switch to pnpm.
   switchedFrom?: PackageManager;
 }
@@ -113,6 +117,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   let files: string[] = [];
   let vercelJsonRaw: string | null = null;
   let rootListing: string[] = [];
+  let pkgMissing: string | null = null;
   // Files in the project's own folder, which the adapter's planFiles are looked up in.
   let projectFiles: string[] = [];
 
@@ -139,32 +144,58 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
         rootDirectory ? d.github.listDir(info.ownerLogin, info.name, rootDirectory, productionBranch) : null,
       ]);
       pkg = parsePackageJson(pkgText);
+      pkgMissing = pkg ? null : `No readable package.json at ${rootDirectory || "the repository root"} on ${productionBranch}.`;
       vercelJsonRaw = vercelJson;
       files = [...(rootFiles ?? []), ...(dirFiles ?? [])];
       projectFiles = (rootDirectory ? dirFiles : rootFiles) ?? [];
       rootListing = rootFiles ?? [];
-      if (!pkg) blockers.push(`No readable package.json at ${rootDirectory || "the repository root"} on ${productionBranch}.`);
     } catch (e) {
       if (e instanceof ApiError && !e.auth) blockers.push(e.message);
       else throw e;
     }
   }
 
-  const { adapter, support } = pickAdapter({ vercelFramework: project.framework, packageJson: pkg });
+  // vercel.json's build settings win over the project's, as they do on Vercel.
+  const overrides = vercelJsonBuildSettings(vercelJsonRaw);
+  const settings: ProjectSettings = {
+    framework: overrides.framework !== undefined ? overrides.framework : project.framework,
+    buildCommand: overrides.buildCommand ?? project.buildCommand ?? null,
+    outputDirectory: overrides.outputDirectory ?? project.outputDirectory ?? null,
+  };
+  const { adapter, support } = pickAdapter({ vercelFramework: settings.framework, packageJson: pkg });
   if (!adapter) blockers.push(support.reason ?? "This framework isn't supported yet.");
-  const env = buildEnvPlan(envVars, adapter?.reservedBindings ?? []);
+  if (pkgMissing && adapter?.requiresPackageJson !== false) blockers.push(pkgMissing);
+  // A Worker that only serves static assets runs none of the app's code, so variables are only
+  // given to the build.
+  const serverRuntime = adapter?.serverRuntime ?? true;
+  const env = buildEnvPlan(envVars, adapter?.reservedBindings ?? [], { runtime: serverRuntime });
   const dependencies = allDependencies(pkg);
+  const planProject = { settings, projectFiles };
 
   const workerName = sanitizeWorkerName(project.name);
-  const planFiles: Record<string, string> = {};
+  const planFiles: Record<string, string> = vercelJsonRaw === null ? {} : { "vercel.json": vercelJsonRaw };
   if (repo && adapter?.planFiles) {
     const { owner, name, productionBranch } = repo;
-    for (const file of adapter.planFiles.filter((f) => projectFiles.includes(f))) {
+    for (const file of adapter.planFiles.filter((f) => projectFiles.includes(f) && !(f in planFiles))) {
       const text = await d.github.getFile(owner, name, rootDirectory ? `${rootDirectory}/${file}` : file, productionBranch);
       if (text !== null) planFiles[file] = text;
     }
   }
-  const warnings: string[] = [...(adapter?.planWarnings?.(pkg, planFiles) ?? [])];
+  if (adapter && repo) blockers.push(...(adapter.planBlockers?.(pkg, planProject) ?? []));
+  const warnings: string[] = [...(adapter?.planWarnings?.(pkg, planFiles, planProject) ?? [])];
+  const vercelJson = translateVercelJson(vercelJsonRaw, {
+    nextjs: adapter?.id === "nextjs" || !adapter,
+    buildSettings: adapter?.followsBuildSettings === true,
+  });
+  if (!serverRuntime && vercelJson.crons.length) {
+    vercelJson.manual.push(
+      ...vercelJson.crons.map(
+        (c) =>
+          `The cron job calling ${c.path} (\`${c.schedule}\`) wasn't moved, because this project runs no server code on Cloudflare for it to call.`,
+      ),
+    );
+    vercelJson.crons = [];
+  }
   if (await d.cloudflare.getWorkerTag(d.accountId, workerName)) {
     warnings.push(
       `A Worker called ${workerName} already exists on this Cloudflare account. Deploying will replace its code and secrets. Choose another name to keep it.`,
@@ -180,10 +211,11 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       repo,
       packageManager,
       adapterId: adapter?.id ?? null,
+      ...(adapter ? { adapterLabel: adapter.label } : {}),
       support,
       nextCache: "kv",
       env: env.plan,
-      vercelJson: translateVercelJson(vercelJsonRaw),
+      vercelJson,
       storage: detectStorage({ envKeys: envVars.map((v) => v.key), dependencies }),
       features: detectVercelFeatures(dependencies),
       domains: planDomains(domains, zones),
@@ -192,6 +224,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       upgrade: adapter?.upgradeFor?.(pkg) ?? null,
       pnpmSwitch: repo ? pnpmSwitchOffer({ pm: packageManager, packageJson: pkg, projectFiles, rootFiles: rootListing }) : null,
       options: DEFAULT_PLAN_OPTIONS,
+      settings,
     },
     values: env.values,
   };

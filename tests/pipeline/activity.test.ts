@@ -14,6 +14,7 @@ describe("describeCommand", () => {
     expect(describeCommand("pnpm", ["add", "-D", "@mdx-js/react@^2.0.0"])).toBe("Adding @mdx-js/react");
     expect(describeCommand("pnpm", ["dlx", "@next/codemod@16.4.1", "upgrade", "16.4.1", "--yes"])).toBe("Running @next/codemod upgrade");
     expect(describeCommand("npx", ["--yes", "vinext@1.3.0", "init", "--platform=cloudflare"])).toBe("Running vinext init");
+    expect(describeCommand("pnpm", ["dlx", "cf@1.0.0-beta.25", "init", "."])).toBe("Running cf init");
     expect(describeCommand("pnpm", ["exec", "cf", "build"])).toBe("Running cf build");
     expect(describeCommand("npm", ["run", "build:cloudflare"])).toBe("Running the build:cloudflare script");
     expect(describeCommand("corepack", ["enable", "--install-directory", "/bin", "pnpm"])).toBe("Setting up pnpm");
@@ -40,6 +41,7 @@ describe("activityFromLine", () => {
     ).toBe("Running the preset-19 codemod");
     expect(activityFromLine("  Running react-19-replace-reactdom-render")).toBe("Running the react-19-replace-reactdom-render codemod");
     expect(activityFromLine("Removing node_modules/")).toBe("Removing node_modules/");
+    expect(activityFromLine("🛠️  Configuring project for React Router")).toBe("Setting the project up for React Router");
     expect(activityFromLine("Upgrading your project to Next.js 16.4.1...")).toBe("Upgrading to Next.js 16.4.1");
     expect(activityFromLine("Migrating from next lint to the ESLint CLI...")).toBe("Migrating from next lint to the ESLint CLI");
     expect(activityFromLine("  Running compatibility check...")).toBe("Checking vinext compatibility");

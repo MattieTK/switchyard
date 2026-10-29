@@ -54,6 +54,8 @@ const LINE_PATTERNS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
   [/Upgrading your project to Next\.js ([\d.]+\d)/, (m) => `Upgrading to Next.js ${m[1]}`],
   [/Migrating from next lint to the ESLint CLI/, () => "Migrating from next lint to the ESLint CLI"],
   [/Running compatibility check/, () => "Checking vinext compatibility"],
+  // cf init names the framework it detected before it changes the project.
+  [/Configuring project for (\S.*?)\s*$/, (m) => `Setting the project up for ${m[1]}`],
   [/^\s*Installing (dependencies|devDependencies):$/, (m) => `Installing ${m[1]}`],
   [/building (\w+) environment for production/, (m) => `Building the ${m[1]} environment`],
   [/Starting asset upload|Building list of assets/, () => "Uploading assets"],

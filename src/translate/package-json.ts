@@ -1,6 +1,8 @@
 export interface PackageJson {
   name?: string;
   packageManager?: string;
+  type?: string;
+  scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   // npm, Yarn and bun workspace patterns, from either the list or the { packages } form.
@@ -29,6 +31,7 @@ export function parsePackageJson(text: string | null): PackageJson | null {
     return null;
   }
   if (!isPlainObject(parsed)) return null;
+  const scripts = stringRecord(parsed.scripts);
   const dependencies = stringRecord(parsed.dependencies);
   const devDependencies = stringRecord(parsed.devDependencies);
   const declared = isPlainObject(parsed.workspaces) ? parsed.workspaces.packages : parsed.workspaces;
@@ -36,6 +39,8 @@ export function parsePackageJson(text: string | null): PackageJson | null {
   return {
     ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
     ...(typeof parsed.packageManager === "string" ? { packageManager: parsed.packageManager } : {}),
+    ...(typeof parsed.type === "string" ? { type: parsed.type } : {}),
+    ...(scripts ? { scripts } : {}),
     ...(dependencies ? { dependencies } : {}),
     ...(devDependencies ? { devDependencies } : {}),
     ...(workspaces ? { workspaces } : {}),

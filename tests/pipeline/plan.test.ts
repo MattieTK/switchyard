@@ -165,6 +165,73 @@ describe("buildPlan", () => {
     expect(plan.blockers).toContain("No readable package.json at apps/web on main.");
   });
 
+  it("plans a Create React App site as static assets, giving variables to the build only", async () => {
+    const { plan } = await buildPlan(
+      deps({
+        project: { ...project, framework: "create-react-app", rootDirectory: null, outputDirectory: null, buildCommand: null },
+        github: {
+          getFile: async (_o: string, _r: string, path: string) =>
+            path === "package.json"
+              ? JSON.stringify({ scripts: { build: "react-scripts build" }, dependencies: { "react-scripts": "5" } })
+              : path === "vercel.json"
+                ? JSON.stringify({ crons: [{ path: "/api/cron", schedule: "0 * * * *" }], rewrites: [{ source: "/(.*)", destination: "/index.html" }] })
+                : null,
+          listDir: async () => ["package.json", "package-lock.json", "public", "src", "api"],
+        },
+      }),
+      "p",
+    );
+    expect(plan).toMatchObject({
+      adapterId: "static",
+      adapterLabel: "Static site",
+      blockers: [],
+      settings: { framework: "create-react-app", buildCommand: null, outputDirectory: null },
+    });
+    expect(plan.env.entries.find((e) => e.key === "API_KEY")?.destinations).toEqual(["production-build"]);
+    expect(plan.vercelJson.crons).toEqual([]);
+    expect(plan.vercelJson.manual).toEqual([expect.stringContaining("The cron job calling /api/cron")]);
+    expect(plan.warnings).toEqual([
+      expect.stringContaining("api/ folder holds Vercel Functions"),
+      expect.stringContaining("Switchyard will serve build/ as static assets, after building the site as Vercel did. Paths without a file serve index.html"),
+    ]);
+  });
+
+  it("follows the build settings vercel.json overrides, as Vercel does", async () => {
+    const { plan } = await buildPlan(
+      deps({
+        project: { ...project, framework: "create-react-app", rootDirectory: null, buildCommand: "npm run build", outputDirectory: "build" },
+        github: {
+          getFile: async (_o: string, _r: string, path: string) =>
+            path === "package.json"
+              ? JSON.stringify({ scripts: { build: "x" } })
+              : path === "vercel.json"
+                ? JSON.stringify({ framework: null, buildCommand: "npm run site", outputDirectory: "site" })
+                : null,
+          listDir: async () => ["package.json", "vercel.json"],
+        },
+      }),
+      "p",
+    );
+    expect(plan.settings).toEqual({ framework: null, buildCommand: "npm run site", outputDirectory: "site" });
+    expect(plan.vercelJson.manual).toEqual([]);
+    expect(plan.warnings).toEqual([expect.stringContaining("serve site/ as static assets")]);
+  });
+
+  it("plans a site without a package.json, and blocks one served from its repository folder", async () => {
+    const plain = (listing: string[]) =>
+      buildPlan(
+        deps({
+          project: { ...project, framework: null, rootDirectory: null },
+          github: { getFile: async () => null, listDir: async () => listing },
+        }),
+        "p",
+      );
+    const withPublic = await plain(["public", "README.md"]);
+    expect(withPublic.plan).toMatchObject({ adapterId: "static", blockers: [], support: { level: "partial" } });
+    const atRoot = await plain(["index.html", "style.css"]);
+    expect(atRoot.plan.blockers).toEqual([expect.stringContaining("Move the site's files into a public/ folder")]);
+  });
+
   it("blocks when the production branch is the migration branch", async () => {
     const { plan } = await buildPlan(
       deps({ project: { ...project, link: { ...project.link!, productionBranch: "cloudflare-migration" } } }),

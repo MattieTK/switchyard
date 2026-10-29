@@ -180,7 +180,7 @@ export function PlanReview({ projectId, next }: { projectId: string; next: strin
             )}
             <dt>Converter</dt>
             <dd className="row">
-              {plan.adapterId === "nextjs" ? "Next.js with vinext" : "None"}
+              {plan.adapterLabel ?? (plan.adapterId === "nextjs" ? "Next.js with vinext" : "None")}
               <Pill tone={SUPPORT_TONE[plan.support.level]}>{plan.support.level}</Pill>
               {plan.support.reason && <span className="muted small">{plan.support.reason}</span>}
             </dd>

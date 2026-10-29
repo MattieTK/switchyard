@@ -55,6 +55,8 @@ describe("package manager", () => {
   it("builds add commands", () => {
     expect(addCommand("npm", ["a@^1", "b"])).toEqual({ cmd: "npm", args: ["install", "a@^1", "b"] });
     expect(addCommand("yarn", ["a@^1"])).toEqual({ cmd: "yarn", args: ["add", "a@^1"] });
+    expect(addCommand("npm", ["cf"], { dev: true })).toEqual({ cmd: "npm", args: ["install", "-D", "cf"] });
+    expect(addCommand("bun", ["cf"], { dev: true })).toEqual({ cmd: "bun", args: ["add", "-d", "cf"] });
   });
 
   it("builds install commands", () => {

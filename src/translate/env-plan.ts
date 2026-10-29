@@ -26,11 +26,12 @@ export type EnvValues = Record<string, string>;
 
 const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-function destinationsFor(targets: readonly VercelTarget[]): EnvDestination[] {
+// runtime is false for Workers that serve static assets only, where variables matter only to the build.
+function destinationsFor(targets: readonly VercelTarget[], runtime: boolean): EnvDestination[] {
   const out: EnvDestination[] = [];
-  if (targets.includes("production")) out.push("production-build", "runtime-secret");
+  if (targets.includes("production")) out.push("production-build", ...(runtime ? (["runtime-secret"] as const) : []));
   if (targets.includes("preview")) out.push("preview-build");
-  if (targets.includes("development")) out.push("dev-vars");
+  if (targets.includes("development") && runtime) out.push("dev-vars");
   return out;
 }
 
@@ -44,7 +45,11 @@ function skipReasonFor(v: VercelEnvVar, reserved: readonly string[]): string | u
   return undefined;
 }
 
-export function buildEnvPlan(vars: VercelEnvVar[], reserved: readonly string[]): { plan: EnvPlan; values: EnvValues } {
+export function buildEnvPlan(
+  vars: VercelEnvVar[],
+  reserved: readonly string[],
+  o: { runtime?: boolean } = {},
+): { plan: EnvPlan; values: EnvValues } {
   const values: EnvValues = {};
   const warnings: string[] = [];
   const entries = vars.map((v): EnvPlanEntry => {
@@ -66,7 +71,7 @@ export function buildEnvPlan(vars: VercelEnvVar[], reserved: readonly string[]):
       hasValue,
       needsInput,
       isSecret: v.type !== "plain",
-      destinations: skipReason ? [] : destinationsFor(v.target),
+      destinations: skipReason ? [] : destinationsFor(v.target, o.runtime ?? true),
       ...(skipReason ? { skipReason } : {}),
     };
   });

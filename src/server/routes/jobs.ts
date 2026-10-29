@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { supportForFramework } from "../../adapters/registry.ts";
+import { frameworkName, supportForFramework } from "../../adapters/registry.ts";
 import type { Support } from "../../adapters/types.ts";
 import type { JobEvent } from "../../pipeline/types.ts";
 import type { AppDeps } from "../app.ts";
@@ -10,6 +10,8 @@ export interface ProjectSummary {
   id: string;
   name: string;
   framework: string | null;
+  // The framework as people know it, such as "Create React App" for create-react-app.
+  frameworkName: string | null;
   repo: string | null;
   productionBranch: string | null;
   support: Support;
@@ -46,6 +48,7 @@ export function jobRoutes(d: AppDeps): Hono {
           id: p.id,
           name: p.name,
           framework: p.framework,
+          frameworkName: frameworkName(p.framework),
           repo: p.link?.org && p.link.repo ? `${p.link.org}/${p.link.repo}` : null,
           productionBranch: p.link?.productionBranch ?? null,
           support: supportForFramework(p.framework),

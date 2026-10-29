@@ -5,7 +5,7 @@ import { prBody } from "../../codegen/pr-body.ts";
 import { MIGRATION_BRANCH } from "../../config.ts";
 import { runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
-import { runtimeSecrets } from "../../translate/env-plan.ts";
+import { runtimeSecrets, secretKeys } from "../../translate/env-plan.ts";
 import { execCommand } from "../../translate/package-manager.ts";
 import type { Step, StepContext } from "../types.ts";
 import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
@@ -126,6 +126,8 @@ export const prStep: Step = {
         body: prBody({
           projectName: plan.projectName,
           productionBranch: repo.productionBranch,
+          summary: ctx.deps.adapter(plan.adapterId ?? "")?.prSummary ?? "Converted the app to run on Cloudflare Workers.",
+          hasSecrets: secretKeys(plan.env).length > 0,
           workersDevUrl: ctx.output("deploy").workersDevUrl,
           hasCrons: plan.vercelJson.crons.length > 0,
           skippedEnv: plan.env.entries.flatMap((e) => (e.skipReason ? [{ key: e.key, reason: e.skipReason }] : [])),

@@ -50,6 +50,8 @@ describe("prBody", () => {
   const body = prBody({
     projectName: "shop",
     productionBranch: "main",
+    summary: "Converted the app with vinext.",
+    hasSecrets: true,
     workersDevUrl: "https://shop.acme.workers.dev",
     hasCrons: true,
     skippedEnv: [{ key: "VERCEL_URL", reason: "Vercel system variable" }],
@@ -74,6 +76,8 @@ describe("prBody", () => {
     const minimal = prBody({
       projectName: "x",
       productionBranch: "main",
+      summary: "Set the site up as static assets.",
+      hasSecrets: false,
       hasCrons: false,
       skippedEnv: [],
       manual: [],

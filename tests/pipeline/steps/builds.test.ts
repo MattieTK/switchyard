@@ -1,12 +1,17 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { BuildInfo, CloudflareClient, TriggerInput } from "../../../src/clients/cloudflare.ts";
 import type { GitHubClient } from "../../../src/clients/github.ts";
+import type { ResponseRequest } from "../../../src/clients/openai.ts";
 import { ApiError } from "../../../src/http.ts";
 import { buildsStep, buildTokenFormUrl, PREVIEW_DEPLOY_COMMAND, startBuildStep } from "../../../src/pipeline/steps/builds.ts";
 import { STEPS } from "../../../src/pipeline/steps/index.ts";
 import { PauseError, STEP_IDS } from "../../../src/pipeline/types.ts";
 import { buildEnvPlan } from "../../../src/translate/env-plan.ts";
+import { fakeRunner } from "../../helpers/fake-runner.ts";
 import { makeContext } from "../../helpers/step-context.ts";
+import { makeTempDir } from "../../helpers/tmp.ts";
 
 const github = {
   getRepo: async () => ({ id: 22, name: "shop", ownerId: 11, ownerLogin: "acme", defaultBranch: "main", private: true }),
@@ -189,6 +194,88 @@ describe("startBuildStep", () => {
   it("fails with a link to the build log when the build fails", async () => {
     const { ctx } = withBuilds([{ build_uuid: "b-1", status: "stopped", build_outcome: "fail" }]);
     await expect(startBuildStep.run(ctx)).rejects.toThrow(/finished with "fail".*builds\/b-1/);
+  });
+
+  it("lets OpenAI fix a failed Cloudflare build from its log, pushes the fix and builds again", async () => {
+    const repoDir = await makeTempDir();
+    await writeFile(join(repoDir, ".nvmrc"), "18\n");
+    const states: BuildInfo[] = [
+      { build_uuid: "b-1", status: "stopped", build_outcome: "fail" },
+      { build_uuid: "b-2", status: "stopped", build_outcome: "success" },
+    ];
+    const cf = {
+      startBuild: vi.fn(async () => (states.length === 2 ? "b-1" : "b-2")),
+      getBuild: vi.fn(async () => states.shift()),
+      getBuildLog: vi.fn(async () => ["Installing Node.js 18", "cf requires Node.js 22 or later"]),
+    } as unknown as CloudflareClient;
+    const gh = {
+      findOpenPr: async () => ({ url: "https://github.com/acme/shop/pull/7", number: 7 }),
+      commentOnPr: vi.fn(async () => {}),
+    } as unknown as GitHubClient;
+    const { run, calls } = fakeRunner();
+    const turns = [
+      [{ name: "write_file", args: { path: ".nvmrc", content: "22\n" } }],
+      [{ name: "finish", args: { fixed: true, summary: "Raised .nvmrc to Node.js 22." } }],
+    ];
+    const respond = vi.fn(async (req: ResponseRequest) => {
+      expect(JSON.stringify(req.input[0])).toContain("cf requires Node.js 22 or later");
+      return {
+        id: "r",
+        output: (turns.shift() ?? []).map((c, i) => ({ type: "function_call", call_id: `c${i}`, name: c.name, arguments: JSON.stringify(c.args) })),
+      };
+    });
+    const { ctx } = makeContext({
+      plan: { options: { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false, aiRepair: true } },
+      deps: { cloudflare: cf, run, github: async () => gh, openai: async () => ({ model: "gpt-5.5", client: { listModels: async () => [], respond } }) },
+      outputs: { clone: { dir: repoDir }, convert: { projectDir: repoDir }, builds: { previewTrigger: "tr-2" } },
+    });
+    // git status reports the change, so it's committed.
+    ctx.deps.run = async (cmd, args, opts) =>
+      cmd === "git" && args[0] === "status" ? { code: 0, output: " M .nvmrc", stdout: " M .nvmrc" } : run(cmd, args, opts);
+
+    await startBuildStep.run(ctx);
+    expect(await readFile(join(repoDir, ".nvmrc"), "utf8")).toBe("22\n");
+    // Checked with a clean install and the build, as Workers Builds runs them.
+    expect(calls.map((c) => [c.cmd, ...c.args].join(" "))).toEqual(
+      expect.arrayContaining(["pnpm install", "pnpm exec cf build", "git push --force origin HEAD:refs/heads/cloudflare-migration"]),
+    );
+    expect(calls.find((c) => c.args.includes("commit"))?.args).toContain("OpenAI (gpt-5.5): Raised .nvmrc to Node.js 22.");
+    expect(gh.commentOnPr).toHaveBeenCalledWith("acme", "shop", 7, expect.stringContaining("Raised .nvmrc to Node.js 22."));
+    expect(cf.startBuild).toHaveBeenCalledTimes(2);
+    expect(ctx.outputs.buildUuid).toBe("b-2");
+  });
+
+  it("starts from the failed build's log when Fix with AI retries the step, and says so when OpenAI can't fix it", async () => {
+    const cf = {
+      startBuild: vi.fn(),
+      getBuildLog: vi.fn(async () => ["npm ERR! missing script: build:cloudflare"]),
+    } as unknown as CloudflareClient;
+    const respond = vi.fn(async () => ({
+      id: "r",
+      output: [{ type: "function_call", call_id: "c", name: "finish", arguments: JSON.stringify({ fixed: false, summary: "Unclear." }) }],
+    }));
+    const { ctx } = makeContext({
+      plan: { options: { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false, aiRepair: true } },
+      deps: { cloudflare: cf, openai: async () => ({ model: "gpt-5.5", client: { listModels: async () => [], respond } }) },
+      outputs: { clone: { dir: await makeTempDir() }, convert: { projectDir: "/w" }, builds: { previewTrigger: "tr-2" } },
+    });
+    ctx.outputs.failedBuild = "b-1";
+    await expect(startBuildStep.run(ctx)).rejects.toThrow(/OpenAI didn't fix the Cloudflare build.*builds\/b-1/);
+    expect(cf.getBuildLog).toHaveBeenCalledWith("acc", "b-1");
+    expect(cf.startBuild).not.toHaveBeenCalled();
+    expect(ctx.outputs.failedBuild).toBeUndefined();
+  });
+
+  it("doesn't ask OpenAI about a failed Cloudflare build unless the plan opted in", async () => {
+    const getBuildLog = vi.fn();
+    const cf = {
+      startBuild: async () => "b-1",
+      getBuild: async () => ({ build_uuid: "b-1", status: "stopped", build_outcome: "fail" }),
+      getBuildLog,
+    } as unknown as CloudflareClient;
+    const { ctx } = makeContext({ deps: { cloudflare: cf }, outputs: { builds: { previewTrigger: "tr-2" } } });
+    await expect(startBuildStep.run(ctx)).rejects.toThrow('finished with "fail"');
+    expect(getBuildLog).not.toHaveBeenCalled();
   });
 
   it("gives up after 30 minutes", async () => {

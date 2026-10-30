@@ -1,5 +1,5 @@
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
-export type Service = "vercel" | "cloudflare" | "github";
+export type Service = "vercel" | "cloudflare" | "github" | "openai";
 
 export class ApiError extends Error {
   readonly service: Service;

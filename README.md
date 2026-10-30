@@ -20,7 +20,7 @@ The projects list says why a project can't move yet, for example SvelteKit, Nuxt
 
 ## What it changes
 
-- **GitHub:** pushes a `cloudflare-migration` branch and opens a pull request. Nothing else is pushed.
+- **GitHub:** pushes a `cloudflare-migration` branch and opens a pull request. Nothing else is pushed. If OpenAI fixes a failed Cloudflare build, its fix is a further commit on that branch, and Switchyard comments on the pull request.
 - **Cloudflare:**
   - Creates a Worker. For apps that run server code (Next.js and React Router), your production variables are stored as its secrets. Vite apps and static sites only use variables while they build, so they go to Workers Builds alone.
   - Creates a KV namespace for vinext's cache, for Next.js apps with KV caching (the default).
@@ -38,6 +38,7 @@ Before anything changes, Switchyard shows a plan for each project. The plan cove
 - The GitHub CLI, logged in (`gh auth login`), or a fine-grained GitHub token
 - A Vercel access token (the app shows how to create one)
 - A Cloudflare account. You log in through the browser.
+- Optional: a ChatGPT plan that includes Codex, or an OpenAI API key, to have a model fix builds and deploys that fail
 
 You don't need the package manager of each project you migrate. npm comes with Node.js, and a missing Yarn or pnpm is set up through Corepack in Switchyard's own folder. Bun projects need Bun installed.
 
@@ -58,10 +59,28 @@ Switchyard listens on this machine only (`127.0.0.1`), and the browser needs tha
 
 ### Migrating a project
 
-1. **Connect:** paste a Vercel token, use your `gh` login or a GitHub token, and log in to Cloudflare in the browser. Choose the Cloudflare account to deploy to; accounts where you can only read Workers can't be chosen.
+1. **Connect:** paste a Vercel token, use your `gh` login or a GitHub token, and log in to Cloudflare in the browser. Choose the Cloudflare account to deploy to; accounts where you can only read Workers can't be chosen. A last, optional step lets you sign in with ChatGPT, so failed builds can be fixed with AI (see below). You can skip it and sign in later from a failed migration.
 2. **Projects:** pick one or more Vercel projects.
 3. **Plan:** review the plan for each project. You can change the Worker name and the Next.js caching, enter values for variables Vercel doesn't return, and choose upgrade options (below). Approving starts the migration.
 4. **Job:** watch each step and its log. If a step needs something from you, such as installing the Cloudflare GitHub App, the job pauses and says what to do. Failed steps can be retried.
+
+### Fixing failed builds with OpenAI
+
+On the Connect page, select **Sign in with ChatGPT**. Switchyard shows a code: open `auth.openai.com/codex/device`, sign in and enter it. This is the device sign-in the Codex CLI uses, and that local agents such as Hermes Agent use too. Fixes then count towards your ChatGPT plan's Codex usage limits, so the plan must include Codex. Switchyard names itself to OpenAI as `switchyard`, and refreshes the sign-in as needed.
+
+You can use an API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys) instead, under **Use an API key instead**. Usage is then billed to the key's organisation.
+
+Then choose a model: the list shows the models your plan or key can use, best first. The plan screen then offers **Fix build errors with OpenAI**, which is on by default. When one of these fails, the model tries to fix it:
+
+- **The local build:** the model sees the build's output, can read, search and edit files in the working copy and add packages, and runs the build again to check its fix.
+- **The first deploy:** the same, checking with `cf deploy`.
+- **The first Cloudflare build:** the model gets the Workers Builds log and checks its fix with a clean install and build on this machine. Switchyard then commits the fix to the migration branch, comments on the pull request and starts another build. It does this at most twice.
+
+If a plan didn't opt in, a failed build, deploy or Cloudflare build offers **Fix with AI** on the job page, which turns it on for that migration and runs the step again; after a failed Cloudflare build, the model starts from that build's log. If you haven't signed in, the job page offers **Sign in with ChatGPT** instead, and the Connect page then takes you back to the migration.
+
+The model is told where the migration is: the steps already done and what they produced (such as the branch and pull request), the step that failed, the steps still to run, and so where its changes end up, either committed with the conversion by the push step, or, once the branch is on GitHub, as a new commit on it.
+
+The model can't run other commands, and it can only change files inside the working copy, outside `.git` and `node_modules`. Secret values are hidden in everything sent to OpenAI, and `.env` and `.dev.vars` files are never read. Each fix is listed in the pull request for you to review. If the model can't fix the failure, the step fails as it would without OpenAI, and the log shows what the model tried. Nothing is stored at OpenAI between requests.
 
 ### Upgrade options
 
@@ -89,7 +108,7 @@ Besides the converter's own files (`cloudflare.config.ts`, the package changes, 
 
 | What | Default location |
 | --- | --- |
-| Credentials, readable only by you | `~/.config/switchyard/credentials.json` |
+| Credentials, including the ChatGPT sign-in or OpenAI key, readable only by you | `~/.config/switchyard/credentials.json` |
 | Jobs and their logs | `~/.config/switchyard/jobs/` |
 | Working copies of repositories | `~/.cache/switchyard/work/` |
 | Yarn and pnpm set up through Corepack | `~/.cache/switchyard/bin/` |

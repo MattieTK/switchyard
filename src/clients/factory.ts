@@ -1,9 +1,12 @@
 import { resolveGitHubAuth, type GitHubAuth } from "../auth/github.ts";
+import type { ChatGPTTokens } from "../auth/openai-oauth.ts";
 import type { CredentialStore } from "../auth/store.ts";
+import { VERSION } from "../config.ts";
 import type { CommandRunner } from "../exec.ts";
 import { ApiError, type FetchFn } from "../http.ts";
 import { createCloudflareClient, type CloudflareClient } from "./cloudflare.ts";
 import { createGitHubClient, type GitHubClient } from "./github.ts";
+import { createChatGPTClient, createOpenAIClient, type OpenAIClient } from "./openai.ts";
 import { createVercelClient, type VercelClient } from "./vercel.ts";
 
 export interface ClientFactory {
@@ -13,6 +16,11 @@ export interface ClientFactory {
   cloudflareWith(token: string): CloudflareClient;
   github(): Promise<GitHubClient>;
   githubAuth(): Promise<GitHubAuth>;
+  // OpenAI is optional, so this is null when it isn't connected.
+  openai(): Promise<{ client: OpenAIClient; model: string } | null>;
+  openaiWith(apiKey: string): OpenAIClient;
+  // A client for a ChatGPT sign-in that isn't saved yet.
+  chatgptWith(tokens: ChatGPTTokens): OpenAIClient;
 }
 
 // Clients are built per call from the stored credentials, so reconnecting an
@@ -22,6 +30,7 @@ export function createClientFactory(o: {
   fetch: FetchFn;
   run: CommandRunner;
   cloudflareToken: () => Promise<string>;
+  chatgptTokens: () => Promise<ChatGPTTokens>;
 }): ClientFactory {
   const githubAuth = async () => {
     const auth = await resolveGitHubAuth(o.run, o.store);
@@ -41,5 +50,16 @@ export function createClientFactory(o: {
       return createGitHubClient({ fetch: o.fetch, token: async () => auth.token });
     },
     githubAuth,
+    async openai() {
+      const { openai } = await o.store.read();
+      if (!openai) return null;
+      const client =
+        openai.kind === "chatgpt"
+          ? createChatGPTClient({ fetch: o.fetch, tokens: o.chatgptTokens, version: VERSION })
+          : createOpenAIClient({ fetch: o.fetch, apiKey: openai.apiKey });
+      return { client, model: openai.model };
+    },
+    openaiWith: (apiKey) => createOpenAIClient({ fetch: o.fetch, apiKey }),
+    chatgptWith: (tokens) => createChatGPTClient({ fetch: o.fetch, tokens: async () => tokens, version: VERSION }),
   };
 }

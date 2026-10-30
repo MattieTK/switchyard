@@ -89,6 +89,8 @@ export interface CloudflareClient {
   setTriggerEnv(accountId: string, triggerUuid: string, vars: TriggerVariables): Promise<void>;
   startBuild(accountId: string, triggerUuid: string, branch: string): Promise<string>;
   getBuild(accountId: string, buildUuid: string): Promise<BuildInfo>;
+  // A build's log lines, oldest first.
+  getBuildLog(accountId: string, buildUuid: string): Promise<string[]>;
   // A JPEG of a page as Browser Run renders it. Needs the browser-rendering.write scope.
   screenshot(accountId: string, url: string): Promise<Uint8Array>;
 }
@@ -99,6 +101,10 @@ interface Envelope<T> {
   errors?: { code: number; message: string }[];
   result_info?: { page: number; total_pages: number };
 }
+
+// A build log longer than this many pages is cut short; its end is what explains a failure,
+// but the pages run oldest first.
+const MAX_LOG_PAGES = 50;
 
 export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise<string> }): CloudflareClient {
   const http = createJsonClient({
@@ -181,6 +187,21 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       return r.build_uuid;
     },
     getBuild: (accountId, buildUuid) => call<BuildInfo>(`${acct(accountId)}/builds/builds/${buildUuid}`),
+    // Each line is [timestamp, message]. A long log comes in pages, linked by a cursor.
+    async getBuildLog(accountId, buildUuid) {
+      const lines: string[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_LOG_PAGES; page++) {
+        const r = await call<{ lines?: [number, string][]; cursor?: string; truncated?: boolean }>(
+          `${acct(accountId)}/builds/builds/${buildUuid}/logs`,
+          { query: { cursor } },
+        );
+        lines.push(...(r.lines ?? []).map(([, message]) => message));
+        if (!r.truncated || !r.cursor || r.cursor === cursor) break;
+        cursor = r.cursor;
+      }
+      return lines;
+    },
     screenshot: (accountId, url) =>
       http.request<Uint8Array>(`${acct(accountId)}/browser-run/screenshot`, {
         method: "POST",

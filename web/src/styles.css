@@ -343,3 +343,21 @@ td .muted { font-size: 0.85rem; }
   .facts dd { margin-bottom: 0.5rem; }
 }
 .support-reason { max-width: 22rem; margin-top: 0.25rem; }
+
+.device-signin {
+  margin-top: 0.25rem;
+}
+
+.device-code {
+  font-size: 1.35rem;
+  letter-spacing: 0.12em;
+  padding: 0.35rem 0.75rem;
+}
+
+.section-head {
+  margin: 2rem 0 0.75rem;
+}
+
+.section-head .note {
+  margin: 0.35rem 0 0;
+}

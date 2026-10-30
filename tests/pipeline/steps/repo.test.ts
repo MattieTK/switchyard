@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Adapter } from "../../../src/adapters/types.ts";
 import { CommandError } from "../../../src/exec.ts";
 import { buildStep, cloneStep, convertStep } from "../../../src/pipeline/steps/repo.ts";
@@ -140,7 +140,7 @@ describe("convertStep", () => {
       },
     } as unknown as Adapter;
     for (const options of [
-      { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true, switchToPnpm: false },
+      { adoptionCodemods: false, eslintMigration: true, updateFlaggedPackages: true, switchToPnpm: false, aiRepair: false },
       undefined,
     ]) {
       const { ctx } = makeContext({
@@ -610,6 +610,37 @@ describe("buildStep", () => {
     const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: projectDir }, convert: { projectDir } } });
     await expect(buildStep.run(ctx)).rejects.toBeInstanceOf(CommandError);
     expect(calls).toHaveLength(1);
+  });
+
+  it("lets OpenAI fix a failed build when the plan opted in, and tells the pull request", async () => {
+    const projectDir = await makeTempDir();
+    await writeFile(join(projectDir, "next.config.ts"), "export default { broken: true };\n");
+    let builds = 0;
+    const { run } = fakeRunner((cmd) => {
+      if (cmd === "git") return { code: 128, output: "" };
+      builds++;
+      return builds === 1 ? { code: 1, output: "next.config.ts: broken is not a valid option" } : { code: 0, output: "" };
+    });
+    const turns = [
+      [{ name: "replace_in_file", args: { path: "next.config.ts", old_text: "broken: true", new_text: "" } }],
+      [{ name: "run_check", args: {} }],
+      [{ name: "finish", args: { fixed: true, summary: "Removed an option vinext doesn't support." } }],
+    ];
+    const respond = vi.fn(async () => ({
+      id: "r",
+      output: (turns.shift() ?? []).map((c, i) => ({ type: "function_call", call_id: `c${i}`, name: c.name, arguments: JSON.stringify(c.args) })),
+    }));
+    const { ctx } = makeContext({
+      plan: { options: { adoptionCodemods: false, eslintMigration: false, updateFlaggedPackages: false, switchToPnpm: false, aiRepair: true } },
+      deps: { run, openai: async () => ({ model: "gpt-5.5", client: { listModels: async () => [], respond } }) },
+      outputs: { clone: { dir: projectDir }, convert: { projectDir } },
+    });
+    await buildStep.run(ctx);
+    expect(builds).toBe(2);
+    expect(await readFile(join(projectDir, "next.config.ts"), "utf8")).toBe("export default {  };\n");
+    expect(JSON.parse(ctx.outputs.warnings ?? "[]")).toEqual([
+      "The local build failed, and OpenAI (gpt-5.5) fixed it: Removed an option vinext doesn't support. It changed next.config.ts. Review these changes before merging.",
+    ]);
   });
 
   it("fails with the command's output when the build fails", async () => {

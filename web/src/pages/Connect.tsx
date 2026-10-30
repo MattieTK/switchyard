@@ -4,7 +4,7 @@ import type { ConnectionStatus } from "../../../src/server/routes/connect.ts";
 import { api, authUrl } from "../api.ts";
 import { go, useRoute } from "../router.ts";
 import { Button, ButtonLink, Callout, Card, Loading, Pill, SelectField, TextField } from "../ui/controls.tsx";
-import { ArrowIcon, ChevronIcon, ExternalIcon } from "../ui/icons.tsx";
+import { ArrowIcon, ChevronIcon, CopyIcon, ExternalIcon } from "../ui/icons.tsx";
 
 type Refresh = () => Promise<void>;
 
@@ -86,6 +86,8 @@ export function Connect() {
   const cf = status.cloudflare;
   const cloudflareReady = cf.connected && cf.accounts.some((a) => a.id === cf.accountId && a.canDeployWorkers);
   const ready = status.vercel.connected && cloudflareReady && status.github.connected;
+  // A migration whose failed step sent the user here to sign in with ChatGPT.
+  const returnTo = route.query.get("return")?.match(/^[0-9a-f-]{36}$/)?.[0];
 
   return (
     <main>
@@ -103,8 +105,40 @@ export function Connect() {
         <CloudflareCard status={status.cloudflare} onChange={refresh} />
         <GitHubCard status={status.github} onChange={refresh} />
       </div>
+
+      <div className="section-head" id="openai">
+        <h2>Optional: fix failed builds with AI</h2>
+        <p className="note">
+          Sign in with ChatGPT and, when a build or deploy fails, a model can fix the code and try again. You can skip this,
+          and sign in later from a failed migration.
+        </p>
+      </div>
+      {returnTo && (
+        <Callout tone={status.openai.connected ? "success" : "info"}>
+          <p style={{ margin: 0 }}>
+            {status.openai.connected
+              ? "You're signed in. Go back to the migration and select Fix with AI."
+              : "Sign in with ChatGPT below, then go back to the migration and select Fix with AI."}
+          </p>
+          <div className="row" style={{ marginTop: "0.6rem" }}>
+            <Button variant={status.openai.connected ? "primary" : "secondary"} onClick={() => go(`#/jobs/${returnTo}`)}>
+              Back to the migration <ArrowIcon />
+            </Button>
+          </div>
+        </Callout>
+      )}
+      <div className="stack">
+        <OpenAICard status={status.openai} onChange={refresh} />
+      </div>
+
       <div className="action-bar">
-        <p className="note">{ready ? "All three accounts are connected." : "Connect all three accounts to continue."}</p>
+        <p className="note">
+          {!ready
+            ? "Connect Vercel, Cloudflare and GitHub to continue."
+            : status.openai.connected
+              ? "All set, including AI fixes."
+              : "Vercel, Cloudflare and GitHub are connected. Signing in with ChatGPT is optional."}
+        </p>
         <Button variant="primary" disabled={!ready} onClick={() => go("#/projects")}>
           Continue to projects <ArrowIcon />
         </Button>
@@ -336,6 +370,184 @@ function GitHubCard({ status, onChange }: { status: ConnectionStatus["github"]; 
           <Callout tone="error">{error}</Callout>
         </div>
       )}
+    </Service>
+  );
+}
+
+// The code a ChatGPT sign-in is waiting for, and how often to ask whether it was entered.
+interface DeviceSignIn {
+  userCode: string;
+  verificationUrl: string;
+  interval: number;
+}
+
+function OpenAICard({ status, onChange }: { status: ConnectionStatus["openai"]; onChange: Refresh }) {
+  const [apiKey, setApiKey] = useState("");
+  const [device, setDevice] = useState<DeviceSignIn | null>(null);
+  const [copied, setCopied] = useState(false);
+  const { busy, error, run } = useAction(onChange);
+  const [signInError, setSignInError] = useState<string | null>(null);
+
+  // Asks Switchyard every few seconds whether the code was entered, until it was or failed.
+  useEffect(() => {
+    if (!device) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const r = await api<{ status: "pending" | "connected" }>("/api/openai/device/poll", { method: "POST" });
+        if (stopped) return;
+        if (r.status === "connected") {
+          setDevice(null);
+          await onChange();
+          return;
+        }
+        timer = setTimeout(() => void poll(), device.interval * 1000);
+      } catch (e) {
+        if (stopped) return;
+        setDevice(null);
+        setSignInError((e as Error).message);
+      }
+    };
+    timer = setTimeout(() => void poll(), device.interval * 1000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [device, onChange]);
+
+  if (status.connected) {
+    const who =
+      status.via === "chatgpt"
+        ? `Signed in with ChatGPT${status.email ? ` as ${status.email}` : ""}${status.plan ? ` (${status.plan})` : ""}.`
+        : "Connected with an API key.";
+    return (
+      <Service
+        logo="AI"
+        name="OpenAI"
+        connected
+        summary={`${who} When a build or deploy fails, the plan can let this model fix the code and try again.`}
+      >
+        <SelectField
+          label="Model"
+          value={status.model}
+          disabled={busy}
+          options={status.models.map((m) => ({ value: m, label: m }))}
+          onChange={(model) => void run(() => api("/api/openai/model", { method: "POST", body: { model } }))}
+        />
+        {error && <Callout tone="error">{error}</Callout>}
+        <Button disabled={busy} onClick={() => void run(() => api("/api/openai", { method: "DELETE" }))}>
+          {status.via === "chatgpt" ? "Sign out" : "Disconnect"}
+        </Button>
+      </Service>
+    );
+  }
+
+  const startSignIn = () =>
+    void run(async () => {
+      setSignInError(null);
+      setDevice(await api<DeviceSignIn>("/api/openai/device", { method: "POST" }));
+    });
+
+  return (
+    <Service
+      logo="AI"
+      name="OpenAI"
+      connected={false}
+      summary={
+        <>
+          When a build or deploy fails, an OpenAI model can fix the code and try again. Its changes go on the migration
+          branch and are listed in the pull request for you to review.
+        </>
+      }
+    >
+      {status.error && <Callout tone="warning">Your OpenAI sign-in has ended. Sign in again.</Callout>}
+      {(signInError ?? error) && <Callout tone="error">{signInError ?? error}</Callout>}
+
+      {device ? (
+        <div className="device-signin">
+          <ol className="steps-list">
+            <li>
+              Open{" "}
+              <a href={device.verificationUrl} target="_blank" rel="noreferrer">
+                {device.verificationUrl.replace(/^https:\/\//, "")} <ExternalIcon />
+              </a>{" "}
+              and sign in to ChatGPT.
+            </li>
+            <li>
+              Enter this code. It expires in 15 minutes.
+              <div className="row" style={{ marginTop: "0.5rem" }}>
+                <code className="device-code">{device.userCode}</code>
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(device.userCode).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1500);
+                    })
+                  }
+                >
+                  <CopyIcon /> {copied ? "Copied" : "Copy code"}
+                </Button>
+              </div>
+            </li>
+          </ol>
+          <div className="row">
+            <Loading>Waiting for you to enter the code…</Loading>
+            <Button variant="ghost" onClick={() => setDevice(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="note">
+            Sign in with your ChatGPT account, as the Codex CLI does. Fixes count towards your plan's Codex usage limits, so
+            it needs a plan that includes Codex.
+          </p>
+          <Button variant="primary" busy={busy} onClick={startSignIn}>
+            Sign in with ChatGPT <ArrowIcon />
+          </Button>
+        </>
+      )}
+
+      <p className="note" style={{ marginTop: "1rem" }}>
+        <strong>What we send.</strong> Only when you choose this on the plan and a step fails: the error output and the project
+        files the model asks to read. Secret values are hidden first, and <code>.env</code> and <code>.dev.vars</code> files
+        are never sent.
+      </p>
+
+      <Collapsible.Root>
+        <Collapsible.Trigger className="collapsible-trigger">
+          Use an API key instead
+          <ChevronIcon />
+        </Collapsible.Trigger>
+        <Collapsible.Panel className="collapsible-panel">
+          <p className="note">
+            Usage is billed to the key's OpenAI organisation instead of your ChatGPT plan. Create a key at{" "}
+            <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+              platform.openai.com/api-keys <ExternalIcon />
+            </a>{" "}
+            in a project with access to the models you want. Leave permissions on <strong>All</strong>, or if you restrict them,
+            allow listing models and creating responses.
+          </p>
+          <form
+            className="form-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run(async () => {
+                await api("/api/openai/key", { method: "POST", body: { apiKey } });
+                setApiKey("");
+              });
+            }}
+          >
+            <TextField label="OpenAI API key" type="password" autoComplete="off" value={apiKey} onValueChange={setApiKey} />
+            <Button type="submit" busy={busy} disabled={!apiKey.trim()}>
+              {busy ? "Checking…" : "Connect with a key"}
+            </Button>
+          </form>
+        </Collapsible.Panel>
+      </Collapsible.Root>
     </Service>
   );
 }

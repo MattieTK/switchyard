@@ -32,6 +32,8 @@ export interface PlanOptions {
   updateFlaggedPackages: boolean;
   // Move the project to pnpm.
   switchToPnpm: boolean;
+  // Ask OpenAI to fix the code when a build or deploy fails, then try again.
+  aiRepair: boolean;
 }
 
 export const DEFAULT_PLAN_OPTIONS: PlanOptions = {
@@ -39,6 +41,7 @@ export const DEFAULT_PLAN_OPTIONS: PlanOptions = {
   eslintMigration: false,
   updateFlaggedPackages: false,
   switchToPnpm: false,
+  aiRepair: false,
 };
 
 export interface MigrationPlan {
@@ -68,6 +71,9 @@ export interface MigrationPlan {
   settings?: ProjectSettings;
   // The project's package manager before the user chose to switch to pnpm.
   switchedFrom?: PackageManager;
+  // The OpenAI model that can fix build errors, when OpenAI is connected; it decides whether
+  // the plan screen offers that option.
+  aiModel?: string | null;
 }
 
 export interface PlanDeps {

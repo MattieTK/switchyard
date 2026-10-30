@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { writeFileSecure } from "../fs-secure.ts";
+import type { ChatGPTTokens } from "./openai-oauth.ts";
 
 export interface VercelCredentials {
   token: string;
@@ -18,10 +19,17 @@ export interface CloudflareCredentials {
   accountName?: string;
 }
 
+// OpenAI is reached with the user's ChatGPT plan, signed in like the Codex CLI, or with an API key.
+// model is the one that fixes build errors, chosen from those the sign-in or key can use.
+export type OpenAICredentials =
+  | ({ kind: "chatgpt"; model: string } & ChatGPTTokens)
+  | { kind: "apikey"; apiKey: string; model: string };
+
 export interface Credentials {
   vercel?: VercelCredentials;
   cloudflare?: CloudflareCredentials;
   githubPat?: string;
+  openai?: OpenAICredentials;
 }
 
 export interface CredentialStore {

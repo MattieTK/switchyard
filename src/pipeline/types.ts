@@ -1,6 +1,7 @@
 import type { Adapter } from "../adapters/types.ts";
 import type { CloudflareClient } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
+import type { OpenAIClient } from "../clients/openai.ts";
 import type { CommandRunner } from "../exec.ts";
 import type { Service } from "../http.ts";
 import type { EnvValues } from "../translate/env-plan.ts";
@@ -51,6 +52,8 @@ export interface PipelineDeps {
   github(): Promise<GitHubClient>;
   githubToken(): Promise<string>;
   cloudflareToken(): Promise<string>;
+  // The OpenAI client and model that fix failed builds, or null when OpenAI isn't connected.
+  openai(): Promise<{ client: OpenAIClient; model: string } | null>;
   adapter(id: string): Adapter | null;
   // Makes sure the project's package manager can run, setting it up if needed.
   ensurePackageManager(pm: PackageManager, cwd: string, log: (line: string) => void): Promise<void>;
@@ -67,6 +70,8 @@ export interface StepContext {
   deps: PipelineDeps;
   log(line: string): void;
   addSecret(value: string): void;
+  // Hides every secret value the job knows of, for text that leaves this machine.
+  redact(text: string): string;
   outputs: Record<string, string>;
   output(step: StepId): Record<string, string>;
 }

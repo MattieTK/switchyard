@@ -59,4 +59,11 @@ describe("createGitHubClient", () => {
     const pr = await c.createPr("o", "r", { title: "t", head: "cloudflare-migration", base: "main", body: "b" });
     expect(pr).toEqual({ url: "https://github.com/o/r/pull/7", number: 7 });
   });
+
+  it("comments on a pull request", async () => {
+    const { c, calls } = client([json({ id: 1 }, 201)]);
+    await c.commentOnPr("o", "r", 7, "Fixed");
+    expect(calls[0]?.url).toBe("https://api.github.com/repos/o/r/issues/7/comments");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ body: "Fixed" });
+  });
 });

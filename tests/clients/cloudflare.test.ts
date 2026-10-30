@@ -127,4 +127,16 @@ describe("createCloudflareClient", () => {
     const { c } = client([json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403)]);
     await expect(c.listBuildTokens("acc")).rejects.toThrow("Authentication error (10000)");
   });
+
+  it("reads a build log across its pages", async () => {
+    const { c, calls } = client([
+      ok({ lines: [[1, "Cloning"], [2, "Installing"]], cursor: "p2", truncated: true }),
+      ok({ lines: [[3, "Build failed"]], truncated: false }),
+    ]);
+    expect(await c.getBuildLog("acc", "b-1")).toEqual(["Cloning", "Installing", "Build failed"]);
+    expect(calls.map((x) => x.url)).toEqual([
+      `${BASE}/accounts/acc/builds/builds/b-1/logs`,
+      `${BASE}/accounts/acc/builds/builds/b-1/logs?cursor=p2`,
+    ]);
+  });
 });

@@ -2,10 +2,12 @@ import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
 import { MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
-import { execString, runScriptCommand } from "../../translate/package-manager.ts";
+import { execCommand, execString, installEnv, runScriptCommand } from "../../translate/package-manager.ts";
+import { logFixWithAIHint, repairWarning, repairWithAI } from "../ai-repair.ts";
 import { buildDashboardUrl, interpretBuild } from "../build-status.ts";
-import { PauseError, type Step } from "../types.ts";
-import { requireOutput, requireRepo } from "./shared.ts";
+import { PauseError, type Step, type StepContext } from "../types.ts";
+import { commitAndPush } from "./release.ts";
+import { buildEnv, requireOutput, requireRepo } from "./shared.ts";
 
 // Preview branches are built to prove they compile, but never deployed, so they
 // can't replace production. cf has no command that builds and uploads a preview version yet.
@@ -140,6 +142,9 @@ export const buildsStep: Step = {
   },
 };
 
+// How many times OpenAI can fix a failed Workers Builds build, each followed by a new build.
+const MAX_CLOUD_REPAIRS = 2;
+
 export const startBuildStep: Step = {
   id: "start-build",
   title: "Run the first Cloudflare build",
@@ -147,30 +152,103 @@ export const startBuildStep: Step = {
     const { plan, accountId } = ctx.job;
     const cf = ctx.deps.cloudflare;
     const trigger = requireOutput(ctx, "builds", "previewTrigger");
-    const buildUuid = await cf.startBuild(accountId, trigger, MIGRATION_BRANCH);
-    const url = buildDashboardUrl(accountId, plan.workerName, buildUuid);
-    ctx.outputs.buildUuid = buildUuid;
-    ctx.outputs.buildUrl = url;
-    ctx.log(`Started build ${buildUuid}: ${url}`);
+    let repairs = 0;
+    // Fix with AI after a failed build: OpenAI starts from that build's log, rather than from
+    // another build that would fail the same way.
+    const failed = ctx.outputs.failedBuild;
+    if (failed) {
+      delete ctx.outputs.failedBuild;
+      const url = buildDashboardUrl(accountId, plan.workerName, failed);
+      if (!(await repairCloudBuild(ctx, failed))) throw new Error(`OpenAI didn't fix the Cloudflare build. Open the build log: ${url}`);
+      repairs++;
+    }
+    for (; ; repairs++) {
+      const buildUuid = await cf.startBuild(accountId, trigger, MIGRATION_BRANCH);
+      const url = buildDashboardUrl(accountId, plan.workerName, buildUuid);
+      ctx.outputs.buildUuid = buildUuid;
+      ctx.outputs.buildUrl = url;
+      ctx.log(`Started build ${buildUuid}: ${url}`);
 
-    const deadline = ctx.deps.now() + BUILD_TIMEOUT_MS;
-    let last = "";
-    for (;;) {
-      const build = await cf.getBuild(accountId, buildUuid);
-      const label = build.build_outcome ? `${build.status} (${build.build_outcome})` : build.status;
-      if (label !== last) {
-        ctx.log(`Build status: ${label}`);
-        last = label;
-      }
-      const state = interpretBuild(build);
-      if (state === "success") return;
-      if (state === "failure") {
-        throw new Error(`The Cloudflare build finished with "${build.build_outcome ?? build.status}". Open the build log: ${url}`);
-      }
-      if (ctx.deps.now() > deadline) {
-        throw new Error(`The Cloudflare build is still running after 30 minutes. Check it in the dashboard: ${url}`);
-      }
-      await ctx.deps.sleep(POLL_MS);
+      const outcome = await waitForBuild(ctx, buildUuid, url);
+      if (outcome === null) return;
+      if (repairs < MAX_CLOUD_REPAIRS && (await repairCloudBuild(ctx, buildUuid))) continue;
+      throw new Error(`The Cloudflare build finished with "${outcome}". Open the build log: ${url}`);
     }
   },
 };
+
+// Polls a build until it ends. Returns null when it succeeded, or its outcome when it failed.
+async function waitForBuild(ctx: StepContext, buildUuid: string, url: string): Promise<string | null> {
+  const cf = ctx.deps.cloudflare;
+  const deadline = ctx.deps.now() + BUILD_TIMEOUT_MS;
+  let last = "";
+  for (;;) {
+    const build = await cf.getBuild(ctx.job.accountId, buildUuid);
+    const label = build.build_outcome ? `${build.status} (${build.build_outcome})` : build.status;
+    if (label !== last) {
+      ctx.log(`Build status: ${label}`);
+      last = label;
+    }
+    const state = interpretBuild(build);
+    if (state === "success") return null;
+    if (state === "failure") return build.build_outcome ?? build.status;
+    if (ctx.deps.now() > deadline) {
+      throw new Error(`The Cloudflare build is still running after 30 minutes. Check it in the dashboard: ${url}`);
+    }
+    await ctx.deps.sleep(POLL_MS);
+  }
+}
+
+// Asks OpenAI to fix a failed Workers Builds build from its log. The fix is checked with a local
+// install and build, as Workers Builds runs them, then pushed to the migration branch and noted on
+// the pull request. Returns whether there's a fix to build again.
+async function repairCloudBuild(ctx: StepContext, buildUuid: string): Promise<boolean> {
+  if (!ctx.job.plan.options?.aiRepair) {
+    await logFixWithAIHint(ctx);
+    return false;
+  }
+  const { plan } = ctx.job;
+  const repo = requireRepo(plan);
+  const dir = requireOutput(ctx, "convert", "projectDir");
+  const log = await ctx.deps.cloudflare.getBuildLog(ctx.job.accountId, buildUuid).catch((e: unknown) => {
+    ctx.log(`Couldn't read the build log: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  });
+  if (!log?.length) return false;
+
+  const pm = plan.packageManager;
+  const env = { ...buildEnv(ctx, "preview"), CI: "1" };
+  const script = ctx.output("convert").buildScript;
+  const build = script ? runScriptCommand(pm, script) : execCommand(pm, "cf", ["build"]);
+  const what = "the Workers Builds build";
+  const repair = await repairWithAI(ctx, {
+    what,
+    output: log.join("\n"),
+    projectDir: dir,
+    // A clean install, as on Workers Builds, then the trigger's build command.
+    async verify() {
+      const install = await ctx.deps.run(pm, pm === "npm" ? ["ci"] : ["install"], { cwd: dir, onLine: ctx.log, env: { ...installEnv(pm), ...env } });
+      if (install.code !== 0) return install;
+      const built = await ctx.deps.run(build.cmd, build.args, { cwd: dir, onLine: ctx.log, env });
+      return { ...built, output: `${install.output}\n${built.output}` };
+    },
+    notes: [
+      `This failed on Workers Builds, Cloudflare's CI. It cloned the migration branch, installed dependencies with CI set (so lockfiles must match package.json), then ran ${[build.cmd, ...build.args].join(" ")}. The same build passed on this machine, so look for what differs there: the Node.js version in .nvmrc or .node-version, the package manager's version in package.json's packageManager field, a lockfile out of date, files that are ignored or not committed, or letter case in import paths.`,
+      "run_check installs the dependencies and builds on this machine, as Workers Builds does. Your changes are pushed to the migration branch and built on Workers Builds again afterwards.",
+    ],
+  });
+  if (!repair?.fixed) return false;
+  if (!repair.changed.length) {
+    ctx.log("OpenAI changed nothing, so building again would fail the same way.");
+    return false;
+  }
+  await commitAndPush(ctx, [`fix: ${what} on Cloudflare`, `OpenAI (${repair.model}): ${repair.summary}`]);
+  const gh = await ctx.deps.github();
+  const pr = await gh.findOpenPr(repo.owner, repo.name, MIGRATION_BRANCH);
+  if (pr) {
+    await gh
+      .commentOnPr(repo.owner, repo.name, pr.number, `Switchyard: ${repairWarning(repair, what)}`)
+      .catch((e: unknown) => ctx.log(`Couldn't comment on the pull request: ${e instanceof Error ? e.message : String(e)}`));
+  }
+  return true;
+}

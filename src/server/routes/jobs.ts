@@ -29,6 +29,7 @@ const startSchema = z.object({
       eslintMigration: z.boolean(),
       updateFlaggedPackages: z.boolean(),
       switchToPnpm: z.boolean(),
+      aiRepair: z.boolean(),
     })
     .partial()
     .optional(),
@@ -67,6 +68,7 @@ export function jobRoutes(d: AppDeps): Hono {
   });
   r.post("/jobs/:id/retry", async (c) => c.json(await d.jobs.retry(c.req.param("id"))));
   r.post("/jobs/:id/restart", async (c) => c.json(await d.jobs.restart(c.req.param("id"))));
+  r.post("/jobs/:id/fix-with-ai", async (c) => c.json(await d.jobs.fixWithAI(c.req.param("id"))));
   r.post("/jobs/:id/build-token", async (c) => {
     const { token } = buildTokenSchema.parse(await c.req.json());
     return c.json(await d.jobs.submitBuildToken(c.req.param("id"), token));

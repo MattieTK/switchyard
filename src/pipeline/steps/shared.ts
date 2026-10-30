@@ -27,7 +27,10 @@ export function git(ctx: StepContext, cwd: string, env: Record<string, string> =
 // NEXT_PUBLIC_* values are inlined at build time, and some apps validate their environment while
 // building, so local builds need the same production values Workers Builds will be given.
 export function productionBuildEnv(ctx: StepContext): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(triggerVariables(ctx.job.plan.env, ctx.values, "production")).map(([k, v]) => [k, v.value]),
-  );
+  return buildEnv(ctx, "production");
+}
+
+// The variables a Workers Builds trigger builds with.
+export function buildEnv(ctx: StepContext, which: "production" | "preview"): Record<string, string> {
+  return Object.fromEntries(Object.entries(triggerVariables(ctx.job.plan.env, ctx.values, which)).map(([k, v]) => [k, v.value]));
 }

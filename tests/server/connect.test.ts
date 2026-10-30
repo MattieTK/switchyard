@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ClientFactory } from "../../src/clients/factory.ts";
+import { createOpenAIClient } from "../../src/clients/openai.ts";
 import { ApiError } from "../../src/http.ts";
 import { fakeFetch, json } from "../helpers/fake-fetch.ts";
 import { makeApp, TOKEN } from "./helpers.ts";
@@ -197,6 +198,7 @@ describe("status", () => {
       },
       githubAuth: async () => ({ token: "gho", source: "gh" }),
       github: async () => ({ getViewer: async () => ({ login: "matt" }) }),
+      openai: async () => null,
     } as unknown as ClientFactory;
     const { req, store } = await makeApp({ clients });
     await store.update(() => ({
@@ -207,6 +209,92 @@ describe("status", () => {
       vercel: { connected: true, scope: "team", username: "matt", teams: [] },
       cloudflare: { connected: false, error: "cloudflare API error 401: expired" },
       github: { connected: true, source: "gh", login: "matt" },
+      openai: { connected: false },
     });
+  });
+});
+
+describe("OpenAI key", () => {
+  const models = () => json({ data: [{ id: "gpt-4o" }, { id: "gpt-5.5" }, { id: "gpt-image-2" }, { id: "gpt-5.4-mini" }] });
+
+  function withOpenAI(fetch: ReturnType<typeof fakeFetch>["fetch"]) {
+    return {
+      openaiWith: (apiKey: string) => createOpenAIClient({ fetch, apiKey }),
+      openai: async () => ({ client: createOpenAIClient({ fetch, apiKey: "sk" }), model: "gpt-5.5" }),
+    } as unknown as ClientFactory;
+  }
+
+  it("stores a working key with the best model it can use, and lets the user choose another", async () => {
+    const f = fakeFetch([models(), models()]);
+    const { req, store } = await makeApp({ clients: withOpenAI(f.fetch) });
+    const res = await req("/api/openai/key", { method: "POST", json: { apiKey: " sk-proj-1 " } });
+    expect(await res.json()).toEqual({ ok: true, model: "gpt-5.5" });
+    expect((await store.read()).openai).toEqual({ kind: "apikey", apiKey: "sk-proj-1", model: "gpt-5.5" });
+
+    expect((await req("/api/openai/model", { method: "POST", json: { model: "gpt-5.4-mini" } })).status).toBe(200);
+    expect((await store.read()).openai?.model).toBe("gpt-5.4-mini");
+  });
+
+  it("refuses a rejected key and a model the key can't use", async () => {
+    const f = fakeFetch([json({ error: { message: "Incorrect API key provided" } }, 401), models()]);
+    const { req, store } = await makeApp({ clients: withOpenAI(f.fetch) });
+    const bad = await req("/api/openai/key", { method: "POST", json: { apiKey: "sk-bad" } });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toContain("OpenAI rejected this key");
+
+    await store.update((c) => ({ ...c, openai: { kind: "apikey", apiKey: "sk-1", model: "gpt-5.5" } }));
+    const res = await req("/api/openai/model", { method: "POST", json: { model: "gpt-image-2" } });
+    expect(res.status).toBe(400);
+    expect((await store.read()).openai?.model).toBe("gpt-5.5");
+  });
+
+  it("disconnects", async () => {
+    const { req, store } = await makeApp();
+    await store.update(() => ({ openai: { kind: "apikey", apiKey: "sk-1", model: "gpt-5.5" } }));
+    await req("/api/openai", { method: "DELETE" });
+    expect((await store.read()).openai).toBeUndefined();
+  });
+});
+
+describe("Sign in with ChatGPT", () => {
+  const jwt = (claims: Record<string, unknown>) =>
+    `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+  const accessToken = jwt({ exp: 4_000_000_000, "https://api.openai.com/auth": { chatgpt_account_id: "acct-1", chatgpt_plan_type: "plus" } });
+
+  it("shows a code, waits for it to be entered, then saves the sign-in with the plan's best model", async () => {
+    const f = fakeFetch([
+      json({ device_auth_id: "dev-1", user_code: "ABCD-1234", interval: "5" }),
+      json({}, 403),
+      json({ authorization_code: "code", code_challenge: "c", code_verifier: "v" }),
+      json({ access_token: accessToken, refresh_token: "rt", id_token: jwt({ email: "me@example.com" }) }),
+    ]);
+    const clients = {
+      chatgptWith: () => ({ listModels: async () => ["gpt-5.5", "gpt-5.4"] }),
+    } as unknown as ClientFactory;
+    const { req, store } = await makeApp({ fetch: f.fetch, clients });
+
+    const start = await req("/api/openai/device", { method: "POST" });
+    expect(await start.json()).toEqual({ userCode: "ABCD-1234", verificationUrl: "https://auth.openai.com/codex/device", interval: 5 });
+    expect(await (await req("/api/openai/device/poll", { method: "POST" })).json()).toEqual({ status: "pending" });
+    expect(await (await req("/api/openai/device/poll", { method: "POST" })).json()).toEqual({ status: "connected", model: "gpt-5.5" });
+    expect((await store.read()).openai).toMatchObject({
+      kind: "chatgpt",
+      model: "gpt-5.5",
+      refreshToken: "rt",
+      accountId: "acct-1",
+      email: "me@example.com",
+      plan: "plus",
+    });
+    // The sign-in is finished, so there's nothing left to poll.
+    expect((await req("/api/openai/device/poll", { method: "POST" })).status).toBe(409);
+  });
+});
+
+describe("OpenAI status", () => {
+  it("says whether OpenAI is connected from the saved credentials, without the key", async () => {
+    const { req, store } = await makeApp();
+    expect(await (await req("/api/openai")).json()).toEqual({ connected: false });
+    await store.update(() => ({ openai: { kind: "apikey", apiKey: "sk-secret", model: "gpt-5.5" } }));
+    expect(await (await req("/api/openai")).json()).toEqual({ connected: true, via: "apikey", model: "gpt-5.5" });
   });
 });

@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
-import { MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
+import { migrationBranchFor, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
 import { execCommand, execString, installEnv, runScriptCommand } from "../../translate/package-manager.ts";
@@ -162,8 +164,9 @@ export const startBuildStep: Step = {
       if (!(await repairCloudBuild(ctx, failed))) throw new Error(`OpenAI didn't fix the Cloudflare build. Open the build log: ${url}`);
       repairs++;
     }
+    const branch = migrationBranchFor(plan.workerName, plan.repo?.rootDirectory);
     for (; ; repairs++) {
-      const buildUuid = await cf.startBuild(accountId, trigger, MIGRATION_BRANCH);
+      const buildUuid = await cf.startBuild(accountId, trigger, branch);
       const url = buildDashboardUrl(accountId, plan.workerName, buildUuid);
       ctx.outputs.buildUuid = buildUuid;
       ctx.outputs.buildUrl = url;
@@ -217,6 +220,21 @@ async function repairCloudBuild(ctx: StepContext, buildUuid: string): Promise<bo
   if (!log?.length) return false;
 
   const pm = plan.packageManager;
+  const repoDir = ctx.output("clone").dir || dir;
+  const lockNames: Record<typeof pm, readonly string[]> = {
+    npm: ["package-lock.json", "npm-shrinkwrap.json"],
+    pnpm: ["pnpm-lock.yaml"],
+    yarn: ["yarn.lock"],
+    bun: ["bun.lock", "bun.lockb"],
+  };
+  let installDir = dir;
+  for (let folder = dir; ; folder = dirname(folder)) {
+    if (lockNames[pm].some((f) => existsSync(join(folder, f)))) {
+      installDir = folder;
+      break;
+    }
+    if (folder === repoDir || dirname(folder) === folder) break;
+  }
   const env = { ...buildEnv(ctx, "preview"), CI: "1" };
   const script = ctx.output("convert").buildScript;
   const build = script ? runScriptCommand(pm, script) : execCommand(pm, "cf", ["build"]);
@@ -225,9 +243,9 @@ async function repairCloudBuild(ctx: StepContext, buildUuid: string): Promise<bo
     what,
     output: log.join("\n"),
     projectDir: dir,
-    // A clean install, as on Workers Builds, then the trigger's build command.
+    // A clean install from the lockfile folder (repo root in monorepos), then the trigger's build command.
     async verify() {
-      const install = await ctx.deps.run(pm, pm === "npm" ? ["ci"] : ["install"], { cwd: dir, onLine: ctx.log, env: { ...installEnv(pm), ...env } });
+      const install = await ctx.deps.run(pm, pm === "npm" ? ["ci"] : ["install"], { cwd: installDir, onLine: ctx.log, env: { ...installEnv(pm), ...env } });
       if (install.code !== 0) return install;
       const built = await ctx.deps.run(build.cmd, build.args, { cwd: dir, onLine: ctx.log, env });
       return { ...built, output: `${install.output}\n${built.output}` };
@@ -244,7 +262,8 @@ async function repairCloudBuild(ctx: StepContext, buildUuid: string): Promise<bo
   }
   await commitAndPush(ctx, [`fix: ${what} on Cloudflare`, `OpenAI (${repair.model}): ${repair.summary}`]);
   const gh = await ctx.deps.github();
-  const pr = await gh.findOpenPr(repo.owner, repo.name, MIGRATION_BRANCH);
+  const branch = migrationBranchFor(plan.workerName, repo.rootDirectory);
+  const pr = await gh.findOpenPr(repo.owner, repo.name, branch);
   if (pr) {
     await gh
       .commentOnPr(repo.owner, repo.name, pr.number, `Switchyard: ${repairWarning(repair, what)}`)

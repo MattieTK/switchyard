@@ -1,4 +1,4 @@
-import { readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensurePackageManager } from "../src/toolchain.ts";
@@ -65,6 +65,22 @@ describe("ensurePackageManager", () => {
     expect(logs).toEqual([
       "This project asks for yarn 1.22.22, so Switchyard set it up through corepack instead of the installed 4.18.1 (version 1.22.22).",
     ]);
+  });
+
+  it("reads packageManager from a monorepo's root package.json when the project folder omits it", async () => {
+    const root = join(binDir, "..");
+    await mkdir(join(root, ".git"));
+    await writeFile(join(root, "package.json"), JSON.stringify({ packageManager: "pnpm@10.2.0" }));
+    const appDir = join(root, "apps", "web");
+    await mkdir(appDir, { recursive: true });
+    await writeFile(join(appDir, "package.json"), JSON.stringify({ name: "web" }));
+    let shim = false;
+    const { run, calls } = fakeRunner((cmd) => {
+      if (cmd === "corepack") shim = true;
+      return { code: 0, output: shim ? "10.2.0\n" : "9.0.0\n" };
+    });
+    await ensurePackageManager({ pm: "pnpm", cwd: appDir, run, binDir, log: () => {} });
+    expect(calls.map((c) => c.cmd)).toEqual(["pnpm", "corepack", "pnpm"]);
   });
 
   it("uses the installed version when it matches packageManager", async () => {

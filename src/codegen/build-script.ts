@@ -112,30 +112,42 @@ export interface CloudflareBuildScript {
   warnings: string[];
 }
 
+// Strips package-runner prefixes (such as `npx next build` or `pnpm exec vite build`)
+// while keeping environment assignments and wrappers (such as `NODE_OPTIONS=...` or `cross-env ...`).
+const RUNNER_PREFIX = /\b(?:npx|bunx|pnpm\s+exec|yarn(?:\s+exec)?)\s+$/;
+
 // runScript gives the command that runs one of the project's scripts, such as `npm run prebuild`.
+// buildCommand is Vercel's optional Build Command override, which takes precedence over scripts.
 export function cloudflareBuildScript(
   scripts: Scripts | undefined,
   runScript: (name: string) => string,
   framework: FrameworkBuild = NEXT_BUILD,
+  buildCommandOverride?: string | null,
 ): CloudflareBuildScript {
   const all = scripts ?? {};
   const before: string[] = [];
   const warnings: string[] = [];
-  if (all.prebuild) before.push(runScript("prebuild"));
+  const override = buildCommandOverride?.trim() || null;
+  const sourceName = override ? null : all["vercel-build"]?.trim() ? "vercel-build" : "build";
+  const build = override ?? (sourceName ? all[sourceName]?.trim() : undefined);
+  if (sourceName === "build" && all.prebuild) before.push(runScript("prebuild"));
+  if (sourceName === "vercel-build" && all["prevercel-build"]) before.push(runScript("prevercel-build"));
   let buildCommand = "cf build";
 
-  const build = all.build?.trim();
   if (build) {
     const flat = flatten(build, all, runScript, framework, 0);
     if (!flat?.nextBuild) {
       warnings.push(
-        `Switchyard couldn't find \`${framework.command}\` in the build script (\`${build}\`), so the Cloudflare build runs only \`cf build\`. If the app needs other steps before it builds, add them to the ${CLOUDFLARE_BUILD_SCRIPT} script and set it as the build command in Workers Builds.`,
+        `Switchyard couldn't find \`${framework.command}\` in ${override ? "Vercel's Build Command" : `the ${sourceName} script`} (\`${build}\`), so the Cloudflare build runs only \`cf build\`. If the app needs other steps (such as building workspace packages) before it builds, add them to the ${CLOUDFLARE_BUILD_SCRIPT} script and set it as the build command in Workers Builds.`,
       );
     } else {
       before.push(...flat.before);
-      // Keeps settings such as NODE_OPTIONS=... that came before the framework's build.
-      buildCommand = `${flat.nextBuild.match(framework.pattern)?.[1] ?? ""}cf build`;
-      const after = [...flat.after, ...(all.postbuild ? [runScript("postbuild")] : [])];
+      // Keeps settings such as NODE_OPTIONS=... that came before the framework's build,
+      // while dropping runner prefixes such as `npx ` that shouldn't wrap `cf build`.
+      const prefix = (flat.nextBuild.match(framework.pattern)?.[1] ?? "").replace(RUNNER_PREFIX, "");
+      buildCommand = `${prefix}cf build`;
+      const postScript = sourceName ? all[`post${sourceName}`] : undefined;
+      const after = [...flat.after, ...(postScript && sourceName ? [runScript(`post${sourceName}`)] : [])];
       if (after.length) {
         warnings.push(
           `Switchyard left out the steps that run after \`${framework.command}\` (\`${after.join(" && ")}\`), because they expect ${framework.label}'s own build output, which the Cloudflare build doesn't produce. Check whether the app still needs what they generate.`,

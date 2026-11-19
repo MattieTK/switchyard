@@ -3,8 +3,12 @@ import type { PackageJson } from "./package-json.ts";
 export type PackageManager = "pnpm" | "npm" | "yarn" | "bun";
 const MANAGERS: readonly PackageManager[] = ["pnpm", "npm", "yarn", "bun"];
 
-export function detectPackageManager(files: readonly string[], pkg: PackageJson | null): PackageManager {
-  const declared = pkg?.packageManager?.split("@")[0];
+export function detectPackageManager(
+  files: readonly string[],
+  pkg: PackageJson | null,
+  rootPkg?: PackageJson | null,
+): PackageManager {
+  const declared = (pkg?.packageManager ?? rootPkg?.packageManager)?.split("@")[0];
   if (declared && (MANAGERS as readonly string[]).includes(declared)) return declared as PackageManager;
   if (files.includes("pnpm-lock.yaml")) return "pnpm";
   if (files.includes("yarn.lock")) return "yarn";

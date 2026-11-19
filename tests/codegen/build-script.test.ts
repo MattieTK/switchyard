@@ -115,4 +115,28 @@ describe("cloudflareBuildScript with scripts that call scripts", () => {
     expect(after.warnings[0]).toContain("Vite's own build output");
     expect(cloudflareBuildScript({ build: "next build" }, run, vite).warnings[0]).toContain("couldn't find `vite build`");
   });
+
+  it("prefers Vercel's buildCommand override and vercel-build over build, and strips runner prefixes", () => {
+    expect(
+      cloudflareBuildScript(
+        { build: "next build" },
+        run,
+        undefined,
+        "pnpm --filter @acme/ui build && npx next build",
+      ),
+    ).toEqual({
+      script: "pnpm --filter @acme/ui build && cf build",
+      warnings: [],
+    });
+    expect(
+      cloudflareBuildScript({ "vercel-build": "prisma generate && next build", build: "next build" }, run),
+    ).toEqual({
+      script: "prisma generate && cf build",
+      warnings: [],
+    });
+    expect(cloudflareBuildScript({ build: "npx next build" }, run)).toEqual({ script: null, warnings: [] });
+    expect(cloudflareBuildScript({ build: "NODE_OPTIONS=--max-old-space-size=4096 pnpm exec next build" }, run).script).toBe(
+      "NODE_OPTIONS=--max-old-space-size=4096 cf build",
+    );
+  });
 });

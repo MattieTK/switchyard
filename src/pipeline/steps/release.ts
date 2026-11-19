@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gitAuthEnv } from "../../auth/github.ts";
 import { prBody } from "../../codegen/pr-body.ts";
-import { MIGRATION_BRANCH } from "../../config.ts";
+import { migrationBranchFor } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets, secretKeys } from "../../translate/env-plan.ts";
@@ -96,11 +96,12 @@ export const pushStep: Step = {
   id: "push",
   title: "Push the migration branch",
   async run(ctx) {
+    const branch = migrationBranchFor(ctx.job.plan.workerName, ctx.job.plan.repo?.rootDirectory);
     await commitAndPush(ctx, [
       "chore: move hosting from Vercel to Cloudflare Workers",
       "Converted by Switchyard. The pull request lists the remaining steps.",
     ]);
-    ctx.outputs.branch = MIGRATION_BRANCH;
+    ctx.outputs.branch = branch;
   },
 };
 
@@ -108,6 +109,7 @@ export const pushStep: Step = {
 // message holds the subject, then any paragraphs of the body.
 export async function commitAndPush(ctx: StepContext, message: readonly string[]): Promise<void> {
   const repoDir = requireOutput(ctx, "clone", "dir");
+  const branch = migrationBranchFor(ctx.job.plan.workerName, ctx.job.plan.repo?.rootDirectory);
   const token = await ctx.deps.githubToken();
   ctx.addSecret(token);
   const local = git(ctx, repoDir);
@@ -121,8 +123,8 @@ export async function commitAndPush(ctx: StepContext, message: readonly string[]
       identity.code === 0 && identity.stdout.trim() ? [] : ["-c", "user.name=Switchyard", "-c", "user.email=switchyard@localhost"];
     await local([...asSwitchyard, "commit", "--no-verify", ...message.flatMap((m) => ["-m", m])]);
   }
-  // The refspec is fixed: this is the only branch Switchyard ever pushes to.
-  await git(ctx, repoDir, gitAuthEnv(token))(["push", "--force", "origin", `HEAD:refs/heads/${MIGRATION_BRANCH}`]);
+  // The refspec is fixed: this is the only branch Switchyard ever pushes to for this project.
+  await git(ctx, repoDir, gitAuthEnv(token))(["push", "--force", "origin", `HEAD:refs/heads/${branch}`]);
 }
 
 export const prStep: Step = {
@@ -131,8 +133,9 @@ export const prStep: Step = {
   async run(ctx) {
     const { plan } = ctx.job;
     const repo = requireRepo(plan);
+    const branch = migrationBranchFor(plan.workerName, repo.rootDirectory);
     const gh = await ctx.deps.github();
-    const existing = await gh.findOpenPr(repo.owner, repo.name, MIGRATION_BRANCH);
+    const existing = await gh.findOpenPr(repo.owner, repo.name, branch);
     const warnings = (["convert", "build", "deploy"] as const).flatMap(
       (step) => JSON.parse(ctx.output(step).warnings ?? "[]") as string[],
     );
@@ -140,7 +143,7 @@ export const prStep: Step = {
       existing ??
       (await gh.createPr(repo.owner, repo.name, {
         title: `Move ${plan.projectName} from Vercel to Cloudflare Workers`,
-        head: MIGRATION_BRANCH,
+        head: branch,
         base: repo.productionBranch,
         body: prBody({
           projectName: plan.projectName,

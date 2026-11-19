@@ -232,6 +232,25 @@ describe("buildPlan", () => {
     expect(atRoot.plan.blockers).toEqual([expect.stringContaining("Move the site's files into a public/ folder")]);
   });
 
+  it("reads root package.json's packageManager and warns on custom Vercel installCommand in monorepos", async () => {
+    const { plan } = await buildPlan(
+      deps({
+        project: { ...project, rootDirectory: "apps/web", installCommand: "pnpm install --no-frozen-lockfile" },
+        github: {
+          getFile: async (_o, _r, path) => {
+            if (path === "apps/web/package.json") return JSON.stringify({ dependencies: { next: "16.2.0" } });
+            if (path === "package.json") return JSON.stringify({ packageManager: "yarn@4.6.0", workspaces: ["apps/*"] });
+            return null;
+          },
+          listDir: async (_o, _r, path) => (path ? ["package.json"] : ["package.json", "yarn.lock"]),
+        },
+      }),
+      "p",
+    );
+    expect(plan.packageManager).toBe("yarn");
+    expect(plan.warnings).toContainEqual(expect.stringContaining("custom Install Command (`pnpm install --no-frozen-lockfile`)"));
+  });
+
   it("blocks when the production branch is the migration branch", async () => {
     const { plan } = await buildPlan(
       deps({ project: { ...project, link: { ...project.link!, productionBranch: "cloudflare-migration" } } }),

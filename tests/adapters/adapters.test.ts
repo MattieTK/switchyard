@@ -93,13 +93,17 @@ describe("nextjsAdapter", () => {
     expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe("save-exact=true\nlegacy-peer-deps=true\n");
   });
 
-  it("leaves .npmrc unchanged and adds no warning when legacy-peer-deps is already set", async () => {
-    const original = "legacy-peer-deps=false\nsave-exact=true";
-    await writeFile(join(dir, ".npmrc"), original);
-    const { run } = fakeRunner();
-    const r = await nextjsAdapter.convert({ dir, pm: "npm", run, log: () => {}, options: { nextCache: "kv" } });
-    expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe(original);
+  it("leaves .npmrc unchanged when legacy-peer-deps=true is already set, and flips false to true", async () => {
+    const enabled = "legacy-peer-deps=true\nsave-exact=true";
+    await writeFile(join(dir, ".npmrc"), enabled);
+    const r = await nextjsAdapter.convert({ dir, pm: "npm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+    expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe(enabled);
     expect(r.warnings).toEqual([]);
+
+    await writeFile(join(dir, ".npmrc"), "legacy-peer-deps=false\nsave-exact=true\n");
+    const flipped = await nextjsAdapter.convert({ dir, pm: "npm", run: fakeRunner().run, log: () => {}, options: { nextCache: "kv" } });
+    expect(await readFile(join(dir, ".npmrc"), "utf8")).toBe("legacy-peer-deps=true\nsave-exact=true\n");
+    expect(flipped.warnings).toEqual([LEGACY_PEERS_WARNING]);
   });
 
   it("warns in the plan when the app's Next.js is older than 16", () => {
@@ -376,21 +380,37 @@ framer-motion 7.3.5
       return { calls, result: nextjsAdapter.convert({ dir, pm, run, log: () => {}, options: { nextCache: "kv" } }) };
     };
 
-    it("updates each installed peer that is outside vinext's range", async () => {
+    it("updates each installed peer that is outside vinext's range, keeping devDeps and syncing @types/react", async () => {
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          dependencies: { react: "19.2.8", "react-dom": "19.2.8" },
+          devDependencies: { "@vitejs/plugin-react": "5.0.0", "@types/react": "^18.3.0" },
+        }),
+      );
       await install(dir, "react", { version: "19.2.8" });
       await install(dir, "react-dom", { version: "19.2.8" });
       await install(dir, "@vitejs/plugin-react", { version: "5.0.0" });
+      await install(dir, "@types/react", { version: "18.3.12" });
       const { calls, result } = convertAfterInit("pnpm");
       const r = await result;
-      expect(calls.at(-1)).toMatchObject({
-        cmd: "pnpm",
-        args: ["add", "react@^19.3.1", "react-dom@^19.3.1", "@vitejs/plugin-react@^5.1.4 || ^6.0.0"],
-        opts: { cwd: dir, env: { pnpm_config_strict_dep_builds: "false" } },
-      });
+      expect(calls.slice(-2)).toMatchObject([
+        {
+          cmd: "pnpm",
+          args: ["add", "react@^19.3.1", "react-dom@^19.3.1"],
+          opts: { cwd: dir, env: { pnpm_config_strict_dep_builds: "false" } },
+        },
+        {
+          cmd: "pnpm",
+          args: ["add", "-D", "@vitejs/plugin-react@^6.0.0", "@types/react@^19"],
+          opts: { cwd: dir, env: { pnpm_config_strict_dep_builds: "false" } },
+        },
+      ]);
       expect(r.warnings).toEqual([
         "Switchyard updated react from 19.2.8 to ^19.3.1, because vinext needs a version in that range. Check the app still works with it.",
         "Switchyard updated react-dom from 19.2.8 to ^19.3.1, because vinext needs a version in that range. Check the app still works with it.",
-        "Switchyard updated @vitejs/plugin-react from 5.0.0 to ^5.1.4 || ^6.0.0, because vinext needs a version in that range. Check the app still works with it.",
+        "Switchyard updated @vitejs/plugin-react from 5.0.0 to ^6.0.0, because vinext needs a version in that range. Check the app still works with it.",
+        "Switchyard updated @types/react from 18.3.12 to ^19, because vinext needs a version in that range. Check the app still works with it.",
       ]);
     });
 

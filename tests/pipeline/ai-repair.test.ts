@@ -111,6 +111,24 @@ describe("repairWithAI", () => {
     expect(result).toMatchObject({ fixed: true, summary: "Fixed it.", changed: ["app/page.tsx", "app/extra.ts"] });
   });
 
+  it("supports delete_file and rename_file, and rolls back all edits when repair fails", async () => {
+    const { ctx, task, repoDir } = await setup([
+      [
+        ["rename_file", { from: "app/header.tsx", to: "app/Header.tsx" }],
+        ["write_file", { path: "app/temp.ts", content: "export const x = 1;\n" }],
+        ["delete_file", { path: "app/page.tsx" }],
+      ],
+      [["finish", { fixed: false, summary: "Couldn't fix it." }]],
+    ]);
+    const result = await repairWithAI(ctx, task);
+    expect(result).toMatchObject({ fixed: false, changed: [], summary: "Couldn't fix it." });
+    // Every modified, created, deleted, and renamed file is restored to its pre-repair state.
+    expect(await readFile(join(repoDir, "app", "page.tsx"), "utf8")).toBe('import Header from "./Header";\n');
+    expect(await readFile(join(repoDir, "app", "header.tsx"), "utf8")).toBe("export default function Header() {}\n");
+    await expect(readFile(join(repoDir, "app", "Header.tsx"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(repoDir, "app", "temp.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reports the model's reason when it can't fix the code", async () => {
     const { ctx, task } = await setup([[["finish", { fixed: false, summary: "The Cloudflare token expired." }]]]);
     expect(await repairWithAI(ctx, task)).toMatchObject({ fixed: false, summary: "The Cloudflare token expired." });

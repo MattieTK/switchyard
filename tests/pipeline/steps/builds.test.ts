@@ -110,6 +110,41 @@ describe("buildsStep", () => {
     expect(ctx.outputs).toEqual({ productionTrigger: "old-1", previewTrigger: "old-2" });
   });
 
+  it("updates existing triggers when build_command, deploy_command, or root_directory changed", async () => {
+    const updateTrigger = vi.fn(async () => {});
+    const { cf } = cloudflare({
+      listTriggers: async () => [
+        {
+          trigger_uuid: "old-1",
+          trigger_name: "switchyard-production",
+          build_command: "npm exec cf build",
+          deploy_command: "npm exec cf deploy --prebuilt",
+          root_directory: "/",
+        },
+        {
+          trigger_uuid: "old-2",
+          trigger_name: "switchyard-preview",
+          build_command: "pnpm run build:cloudflare",
+          deploy_command: PREVIEW_DEPLOY_COMMAND,
+          root_directory: "/",
+        },
+      ],
+      updateTrigger,
+    });
+    const { ctx } = makeContext({
+      deps: { cloudflare: cf, github: async () => github },
+      outputs: { deploy: { workerTag: "t" }, convert: { buildScript: "build:cloudflare" } },
+    });
+    await buildsStep.run(ctx);
+    expect(updateTrigger.mock.calls).toEqual([
+      [
+        "acc",
+        "old-1",
+        { build_command: "pnpm run build:cloudflare", deploy_command: "pnpm exec cf deploy --prebuilt" },
+      ],
+    ]);
+  });
+
   it("points existing triggers at the build token when they use another one", async () => {
     // A trigger keeps a deleted build token until it's repointed, and its builds fail.
     const setTriggerBuildToken = vi.fn(async () => {});
@@ -235,10 +270,11 @@ describe("startBuildStep", () => {
 
     await startBuildStep.run(ctx);
     expect(await readFile(join(repoDir, ".nvmrc"), "utf8")).toBe("22\n");
-    // Checked with a clean install and the build, as Workers Builds runs them.
+    // Checked with a strict CI install (frozen lockfile, no local installEnv overrides) and the build.
     expect(calls.map((c) => [c.cmd, ...c.args].join(" "))).toEqual(
-      expect.arrayContaining(["pnpm install", "pnpm exec cf build", "git push --force origin HEAD:refs/heads/cloudflare-migration"]),
+      expect.arrayContaining(["pnpm install --frozen-lockfile", "pnpm exec cf build", "git push --force origin HEAD:refs/heads/cloudflare-migration"]),
     );
+    expect(calls.find((c) => c.args[0] === "install")?.opts?.env).not.toHaveProperty("pnpm_config_strict_dep_builds");
     expect(calls.find((c) => c.args.includes("commit"))?.args).toContain("OpenAI (gpt-5.5): Raised .nvmrc to Node.js 22.");
     expect(gh.commentOnPr).toHaveBeenCalledWith("acme", "shop", 7, expect.stringContaining("Raised .nvmrc to Node.js 22."));
     expect(cf.startBuild).toHaveBeenCalledTimes(2);

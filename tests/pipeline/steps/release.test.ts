@@ -17,15 +17,16 @@ describe("deployStep", () => {
     [],
   );
 
-  it("lets OpenAI fix a failed deploy, keeps the passing deploy's URL and lists the fix for the pull request", async () => {
+  it("lets OpenAI fix a failed deploy by rebuilding before --prebuilt upload, keeps the URL and lists the fix", async () => {
     const repoDir = await makeTempDir();
     await writeFile(join(repoDir, "cloudflare.config.ts"), 'compatibilityDate: "2099-01-01"\n');
     let deploys = 0;
-    const { run } = fakeRunner(() =>
-      ++deploys === 1
+    const { run, calls } = fakeRunner((_cmd, args) => {
+      if (args.includes("build")) return { code: 0, output: "Build complete\n" };
+      return ++deploys === 1
         ? { code: 1, output: "Error: compatibility date 2099-01-01 is in the future" }
-        : { code: 0, output: "Deployed shop\n  https://shop.acme.workers.dev\n" },
-    );
+        : { code: 0, output: "Deployed shop\n  https://shop.acme.workers.dev\n" };
+    });
     const turns = [
       [{ name: "replace_in_file", args: { path: "cloudflare.config.ts", old_text: "2099-01-01", new_text: "2026-10-14" } }],
       [{ name: "run_check", args: {} }],
@@ -43,6 +44,11 @@ describe("deployStep", () => {
     });
     await deployStep.run(ctx);
     expect(deploys).toBe(2);
+    expect(calls.map((c) => c.args.slice(0, 4))).toEqual([
+      ["exec", "cf", "deploy", "--prebuilt"],
+      ["exec", "cf", "build"],
+      ["exec", "cf", "deploy", "--prebuilt"],
+    ]);
     expect(ctx.outputs.workersDevUrl).toBe("https://shop.acme.workers.dev");
     expect(JSON.parse(ctx.outputs.warnings ?? "[]")[0]).toMatch(/^The first deploy failed, and OpenAI \(gpt-5.5\) fixed it/);
   });

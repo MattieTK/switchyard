@@ -6,7 +6,7 @@ import { MIGRATION_BRANCH } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { writeFileSecure } from "../../fs-secure.ts";
 import { runtimeSecrets, secretKeys } from "../../translate/env-plan.ts";
-import { execCommand } from "../../translate/package-manager.ts";
+import { execCommand, runScriptCommand } from "../../translate/package-manager.ts";
 import { repairWithAI, repairWarning } from "../ai-repair.ts";
 import type { Step, StepContext } from "../types.ts";
 import { git, productionBuildEnv, requireOutput, requireRepo } from "./shared.ts";
@@ -26,7 +26,9 @@ export const deployStep: Step = {
     const hasSecrets = Object.keys(secrets).length > 0;
     // Outside the repository, so it can never be committed.
     const secretsFile = join(ctx.deps.workDir, `${ctx.job.id}.secrets.json`);
-    const args = ["deploy", "--message", "First deploy by Switchyard"];
+    // buildStep just produced .cloudflare/output (using build:cloudflare when present),
+    // so the initial deploy uploads that prebuilt output instead of rebuilding from scratch.
+    const args = ["deploy", "--prebuilt", "--message", "First deploy by Switchyard"];
     if (hasSecrets) {
       await writeFileSecure(secretsFile, JSON.stringify(secrets));
       args.push("--secrets-file", secretsFile);
@@ -34,22 +36,29 @@ export const deployStep: Step = {
 
     try {
       const { cmd, args: full } = execCommand(plan.packageManager, "cf", args);
-      const deploy = () =>
-        ctx.deps.run(cmd, full, {
-          cwd: dir,
-          onLine: ctx.log,
-          env: { ...productionBuildEnv(ctx), CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId },
-        });
+      const runEnv = { ...productionBuildEnv(ctx), CI: "1", CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId };
+      const deploy = () => ctx.deps.run(cmd, full, { cwd: dir, onLine: ctx.log, env: runEnv });
+      const buildScript = ctx.output("convert").buildScript;
+      const rebuild = buildScript
+        ? runScriptCommand(plan.packageManager, buildScript)
+        : execCommand(plan.packageManager, "cf", ["build"]);
+      // When AI edits code/config during a failed deploy, rebuild first so changes reach --prebuilt.
+      const rebuildAndDeploy = async () => {
+        const built = await ctx.deps.run(rebuild.cmd, rebuild.args, { cwd: dir, onLine: ctx.log, env: runEnv });
+        if (built.code !== 0) return built;
+        const uploaded = await deploy();
+        return { ...uploaded, output: `${built.output}\n${uploaded.output}` };
+      };
       let result = await deploy();
       if (result.code !== 0) {
         const what = "the first deploy";
         const repair = await repairWithAI(ctx, {
           what,
           output: result.output,
-            projectDir: dir,
-          verify: deploy,
+          projectDir: dir,
+          verify: rebuildAndDeploy,
           notes: [
-            "The deploy runs cf deploy, which builds the project and uploads it as a Worker. The local build passed just before, so look first at what happens after the build: the Worker's configuration in cloudflare.config.ts, its size, and code that runs when the Worker starts.",
+            "The deploy uploads the prebuilt Worker output with cf deploy --prebuilt (and run_check rebuilds first before uploading). The local build passed just before, so look first at what happens after the build: the Worker's configuration in cloudflare.config.ts, its size, and code that runs when the Worker starts.",
           ],
         });
         if (!repair?.fixed || !repair.passed) throw new CommandError(cmd, full, result);

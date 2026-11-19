@@ -2,7 +2,7 @@ import type { BuildTrigger, TriggerInput } from "../../clients/cloudflare.ts";
 import { MIGRATION_BRANCH, PREVIEW_TRIGGER, PRODUCTION_TRIGGER } from "../../config.ts";
 import { ApiError } from "../../http.ts";
 import { triggerVariables } from "../../translate/env-plan.ts";
-import { execCommand, execString, installEnv, runScriptCommand } from "../../translate/package-manager.ts";
+import { execCommand, execString, runScriptCommand } from "../../translate/package-manager.ts";
 import { logFixWithAIHint, repairWarning, repairWithAI } from "../ai-repair.ts";
 import { buildDashboardUrl, interpretBuild } from "../build-status.ts";
 import { PauseError, type Step, type StepContext } from "../types.ts";
@@ -109,8 +109,19 @@ export const buildsStep: Step = {
       path_excludes: [],
       build_caching_enabled: true,
     };
-    const ensure = async (input: TriggerInput): Promise<BuildTrigger> =>
-      existing.find((t) => t.trigger_name === input.trigger_name) ?? cf.createTrigger(accountId, input);
+    const ensure = async (input: TriggerInput): Promise<BuildTrigger> => {
+      const found = existing.find((t) => t.trigger_name === input.trigger_name);
+      if (!found) return cf.createTrigger(accountId, input);
+      // Keep existing triggers in sync when a restart changes package manager, buildScript, or root_directory.
+      const patch: Record<string, string> = {};
+      if (found.build_command !== undefined && found.build_command !== input.build_command) patch.build_command = input.build_command;
+      if (found.deploy_command !== undefined && found.deploy_command !== input.deploy_command) patch.deploy_command = input.deploy_command;
+      if (found.root_directory !== undefined && found.root_directory !== input.root_directory) patch.root_directory = input.root_directory;
+      if (Object.keys(patch).length && cf.updateTrigger) {
+        await cf.updateTrigger(accountId, found.trigger_uuid, patch);
+      }
+      return found;
+    };
 
     const production = await ensure({
       ...base,
@@ -225,9 +236,11 @@ async function repairCloudBuild(ctx: StepContext, buildUuid: string): Promise<bo
     what,
     output: log.join("\n"),
     projectDir: dir,
-    // A clean install, as on Workers Builds, then the trigger's build command.
+    // A clean install matching Workers Builds (CI=1, without local installEnv relaxations),
+    // then the trigger's build command.
     async verify() {
-      const install = await ctx.deps.run(pm, pm === "npm" ? ["ci"] : ["install"], { cwd: dir, onLine: ctx.log, env: { ...installEnv(pm), ...env } });
+      const installArgs = pm === "npm" ? ["ci"] : pm === "pnpm" ? ["install", "--frozen-lockfile"] : ["install"];
+      const install = await ctx.deps.run(pm, installArgs, { cwd: dir, onLine: ctx.log, env });
       if (install.code !== 0) return install;
       const built = await ctx.deps.run(build.cmd, build.args, { cwd: dir, onLine: ctx.log, env });
       return { ...built, output: `${install.output}\n${built.output}` };

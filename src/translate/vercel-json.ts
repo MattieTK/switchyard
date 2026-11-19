@@ -3,9 +3,35 @@ export interface CronJob {
   schedule: string;
 }
 
+export type HtmlHandling = "force-trailing-slash" | "drop-trailing-slash" | "none";
+
+export interface RedirectRule {
+  source: string;
+  destination: string;
+  status: number;
+}
+
+export interface HeaderRule {
+  source: string;
+  headers: { key: string; value: string }[];
+}
+
+export interface ProxyRewrite {
+  // Path prefix matched on incoming requests, e.g. "/api" (or "/" for root).
+  prefix: string;
+  // Upstream origin/path prefix, e.g. "https://api.example.com" or "https://api.example.com/v1".
+  target: string;
+  // Whether to forward the matched remainder after prefix (true for `/api/:path*` -> `https://.../:path*`).
+  wildcard: boolean;
+}
+
 export interface VercelJsonTranslation {
   crons: CronJob[];
   manual: string[];
+  redirects?: RedirectRule[];
+  headers?: HeaderRule[];
+  proxyRewrites?: ProxyRewrite[];
+  htmlHandling?: HtmlHandling;
 }
 
 // Captures the first four fields (keeping their original spacing) and the day-of-week field.
@@ -42,8 +68,7 @@ const NOTES: Record<string, string> = {
 // mapped to null needs nothing: Workers static assets already serve /about from about.html.
 const ASSET_NOTES: Record<string, string | null> = {
   cleanUrls: null,
-  trailingSlash:
-    "`trailingSlash` isn't translated – Workers static assets choose trailing slashes with `htmlHandling` under `assets` in cloudflare.config.ts.",
+  trailingSlash: null,
   images: "`images` settings aren't translated – Vercel Image Optimization isn't available on Workers static assets.",
 };
 
@@ -75,6 +100,19 @@ export function vercelJsonBuildSettings(
   );
 }
 
+// Catch-all sources SPAs use in vercel.json to route non-file paths to index.html,
+// including common negative-lookahead exclusions such as `/((?!api|assets).*)`.
+const SPA_FALLBACK_PATTERNS = [
+  /^\/\(\.\*\)$/,
+  /^\/\(\.\+\)$/,
+  /^\/\.\*$/,
+  /^\/:[a-zA-Z_]\w*\*(?:\(\.\*\))?$/,
+  /^\/:[a-zA-Z_]\w*\(\.\*\)$/,
+  /^\/\(\(\?![^)]+\)\.\*\)$/,
+  /^\/\(\?![^)]+\)\.\*$/,
+  /^\/\(\[\^\.\]\*\)$/,
+];
+
 // A rewrite of every path to the app's index.html, which single-page apps on Vercel use so
 // that client-side routes load. Workers static assets do the same with their
 // single-page-application setting, which Switchyard sets for these apps.
@@ -82,18 +120,147 @@ export function isSpaFallback(rule: unknown): boolean {
   if (typeof rule !== "object" || rule === null) return false;
   const { source, destination, has, missing } = rule as Record<string, unknown>;
   if (has !== undefined || missing !== undefined) return false;
-  const everything = ["/(.*)", "/:path*", "/:path(.*)", "/((?!api/.*).*)", "/((?!api).*)", "/(.+)", "/:match*"];
-  return typeof source === "string" && everything.includes(source) && (destination === "/index.html" || destination === "/");
+  if (typeof source !== "string" || (destination !== "/index.html" && destination !== "/")) return false;
+  return SPA_FALLBACK_PATTERNS.some((re) => re.test(source));
 }
 
-// Whether vercel.json makes the site a single-page app with a catch-all rewrite.
+// Legacy Vercel v2 `routes`: `{ handle: "filesystem" }` followed by a catch-all to `/index.html`.
+function hasLegacySpaRoute(routes: unknown): boolean {
+  if (!Array.isArray(routes)) return false;
+  const fsIndex = routes.findIndex((r) => typeof r === "object" && r !== null && (r as Record<string, unknown>).handle === "filesystem");
+  if (fsIndex === -1) return false;
+  return routes.slice(fsIndex + 1).some((r) => {
+    if (typeof r !== "object" || r === null) return false;
+    const { src, dest, status } = r as Record<string, unknown>;
+    return (
+      status === undefined &&
+      typeof src === "string" &&
+      (dest === "/index.html" || dest === "/") &&
+      SPA_FALLBACK_PATTERNS.some((re) => re.test(src))
+    );
+  });
+}
+
+// Whether vercel.json makes the site a single-page app with a catch-all rewrite or legacy route.
 export function hasSpaFallback(raw: string | null): boolean {
   try {
-    const rewrites = (JSON.parse(raw ?? "null") as { rewrites?: unknown } | null)?.rewrites;
-    return Array.isArray(rewrites) && rewrites.some(isSpaFallback);
+    const parsed = JSON.parse(raw ?? "null") as { rewrites?: unknown; routes?: unknown } | null;
+    return (Array.isArray(parsed?.rewrites) && parsed.rewrites.some(isSpaFallback)) || hasLegacySpaRoute(parsed?.routes);
   } catch {
     return false;
   }
+}
+
+const VALID_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+// Characters in a path segment that indicate a regex Cloudflare _redirects/_headers can't express.
+const REGEX_META = /[()[\]{}?+\\^$|]/;
+
+// Converts a Vercel redirect source/destination pair into Cloudflare Workers `_redirects` syntax,
+// or returns null when the rule uses conditions or regex features `_redirects` can't represent.
+function translateRedirectRule(rule: unknown): RedirectRule | null {
+  if (typeof rule !== "object" || rule === null) return null;
+  const { source, destination, permanent, statusCode, has, missing } = rule as Record<string, unknown>;
+  if (has !== undefined || missing !== undefined) return null;
+  if (typeof source !== "string" || typeof destination !== "string") return null;
+  if (!source.startsWith("/") || /\s/.test(source) || /\s/.test(destination)) return null;
+  if (!destination.startsWith("/") && !/^https?:\/\//.test(destination)) return null;
+
+  let cfSource = source;
+  let cfDest = destination;
+  let splatName: string | null = null;
+  const splatMatch = cfSource.match(/^(.*)\/(?::([a-zA-Z_]\w*)\*|\(\.\*\))$/);
+  if (splatMatch) {
+    cfSource = `${splatMatch[1] ?? ""}/*`;
+    splatName = splatMatch[2] ?? "$1";
+  } else if (cfSource.endsWith("/*")) {
+    splatName = "*";
+  }
+  if (REGEX_META.test(cfSource) || cfSource.includes("*/*")) return null;
+  // Wildcards are only allowed at the end of a Cloudflare _redirects source.
+  if (cfSource.slice(0, -1).includes("*")) return null;
+
+  if (splatName) {
+    if (splatName === "$1") cfDest = cfDest.replace(/\$1/g, ":splat");
+    else if (splatName !== "*") cfDest = cfDest.replace(new RegExp(`:${splatName}\\*?`, "g"), ":splat");
+  }
+  if (REGEX_META.test(cfDest.replace(/^https?:\/\//, ""))) return null;
+
+  const status =
+    typeof statusCode === "number" && VALID_REDIRECT_STATUSES.has(statusCode)
+      ? statusCode
+      : permanent === false
+        ? 307
+        : 308;
+  return { source: cfSource, destination: cfDest, status };
+}
+
+// Converts a Vercel headers rule into Cloudflare Workers `_headers` syntax, or null when unsupported.
+function translateHeaderRule(rule: unknown): HeaderRule | null {
+  if (typeof rule !== "object" || rule === null) return null;
+  const { source, headers, has, missing } = rule as Record<string, unknown>;
+  if (has !== undefined || missing !== undefined) return null;
+  if (typeof source !== "string" || !source.startsWith("/") || /\s/.test(source) || !Array.isArray(headers)) return null;
+
+  let cfSource = source.replace(/\/(?::[a-zA-Z_]\w*\*|\(\.\*\))$/, "/*").replace(/:[a-zA-Z_]\w+/g, "*");
+  if (REGEX_META.test(cfSource)) return null;
+  const pairs: { key: string; value: string }[] = [];
+  for (const h of headers) {
+    if (typeof h !== "object" || h === null) return null;
+    const { key, value } = h as Record<string, unknown>;
+    if (typeof key !== "string" || typeof value !== "string" || !key.trim() || /[\r\n:]/.test(key) || /[\r\n]/.test(value)) {
+      return null;
+    }
+    pairs.push({ key: key.trim(), value });
+  }
+  if (!pairs.length) return null;
+  return { source: cfSource, headers: pairs };
+}
+
+// Converts an external proxy rewrite (e.g. `/api/:path*` -> `https://api.example.com/:path*`)
+// into a ProxyRewrite for a generated proxy Worker, or null if not a simple external proxy.
+function translateProxyRewrite(rule: unknown): ProxyRewrite | null {
+  if (typeof rule !== "object" || rule === null) return null;
+  const { source, destination, has, missing } = rule as Record<string, unknown>;
+  if (has !== undefined || missing !== undefined) return null;
+  if (typeof source !== "string" || typeof destination !== "string") return null;
+  if (!source.startsWith("/") || !/^https?:\/\//.test(destination)) return null;
+
+  const wild = source.match(/^(\/[a-zA-Z0-9._/-]*?)\/(?::([a-zA-Z_]\w*)\*|\(\.\*\))$/);
+  if (wild) {
+    const prefix = wild[1] || "/";
+    const param = wild[2];
+    const tailPattern = param ? new RegExp(`/:${param}\\*?$`) : /\/\$1$/;
+    if (!tailPattern.test(destination)) return null;
+    const target = destination.replace(tailPattern, "");
+    if (!/^https?:\/\/[^/\s]+/.test(target)) return null;
+    return { prefix, target, wildcard: true };
+  }
+  if (!REGEX_META.test(source) && !source.includes(":") && !source.includes("*")) {
+    return { prefix: source, target: destination, wildcard: false };
+  }
+  return null;
+}
+
+export function formatRedirectsFile(rules: readonly RedirectRule[]): string {
+  return `${rules.map((r) => `${r.source} ${r.destination} ${r.status}`).join("\n")}\n`;
+}
+
+export function formatHeadersFile(rules: readonly HeaderRule[]): string {
+  return `${rules.map((r) => `${r.source}\n${r.headers.map((h) => `  ${h.key}: ${h.value}`).join("\n")}`).join("\n\n")}\n`;
+}
+
+const RULE_MARKER = "# Added by Switchyard from vercel.json";
+
+export function mergeAssetRules(existing: string, generated: string): string {
+  const clean = generated.trimEnd();
+  if (!clean) return existing;
+  if (existing.includes(RULE_MARKER)) {
+    const idx = existing.indexOf(RULE_MARKER);
+    const before = existing.slice(0, idx).trimEnd();
+    return before ? `${before}\n\n${RULE_MARKER}\n${clean}\n` : `${RULE_MARKER}\n${clean}\n`;
+  }
+  const base = existing.trimEnd();
+  return base ? `${base}\n\n${RULE_MARKER}\n${clean}\n` : `${RULE_MARKER}\n${clean}\n`;
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -157,6 +324,16 @@ export function translateVercelJson(raw: string | null, options: VercelJsonOptio
 
   const crons: CronJob[] = [];
   const manual: string[] = [];
+  const redirects: RedirectRule[] = [];
+  const headers: HeaderRule[] = [];
+  const proxyRewrites: ProxyRewrite[] = [];
+  let htmlHandling: HtmlHandling | undefined;
+
+  if (!options.nextjs) {
+    if (config.trailingSlash === true) htmlHandling = "force-trailing-slash";
+    else if (config.trailingSlash === false) htmlHandling = "drop-trailing-slash";
+    else if (config.cleanUrls === false) htmlHandling = "none";
+  }
 
   for (const [key, value] of Object.entries(config)) {
     if (key === "$schema") continue;
@@ -171,17 +348,47 @@ export function translateVercelJson(raw: string | null, options: VercelJsonOptio
       }
       continue;
     }
-    if (!options.nextjs && (key === "redirects" || key === "rewrites" || key === "headers") && Array.isArray(value)) {
-      const rules = key === "rewrites" ? value.filter((r) => !isSpaFallback(r)) : value;
-      const n = rules.length;
-      if (!n) continue;
-      manual.push(
-        key === "redirects"
-          ? `${plural(n, "redirect", "redirects")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in a \`_redirects\` file in the site's output folder, or in the app.`
-          : key === "headers"
-            ? `${plural(n, "header rule", "header rules")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in a \`_headers\` file in the site's output folder.`
-            : `${plural(n, "rewrite", "rewrites")} in vercel.json – recreate ${n === 1 ? "it" : "them"} in the app, since Workers static assets don't rewrite paths.`,
-      );
+    if (!options.nextjs && key === "redirects" && Array.isArray(value)) {
+      let skipped = 0;
+      for (const r of value) {
+        const translated = translateRedirectRule(r);
+        if (translated) redirects.push(translated);
+        else skipped++;
+      }
+      if (skipped) {
+        manual.push(
+          `${plural(skipped, "redirect", "redirects")} in vercel.json couldn't be converted to \`_redirects\` automatically (for example, conditional or regex rules) – recreate ${skipped === 1 ? "it" : "them"} manually.`,
+        );
+      }
+      continue;
+    }
+    if (!options.nextjs && key === "headers" && Array.isArray(value)) {
+      let skipped = 0;
+      for (const r of value) {
+        const translated = translateHeaderRule(r);
+        if (translated) headers.push(translated);
+        else skipped++;
+      }
+      if (skipped) {
+        manual.push(
+          `${plural(skipped, "header rule", "header rules")} in vercel.json couldn't be converted to \`_headers\` automatically – recreate ${skipped === 1 ? "it" : "them"} manually.`,
+        );
+      }
+      continue;
+    }
+    if (!options.nextjs && key === "rewrites" && Array.isArray(value)) {
+      let skipped = 0;
+      for (const r of value) {
+        if (isSpaFallback(r)) continue;
+        const proxy = translateProxyRewrite(r);
+        if (proxy) proxyRewrites.push(proxy);
+        else skipped++;
+      }
+      if (skipped) {
+        manual.push(
+          `${plural(skipped, "rewrite", "rewrites")} in vercel.json – recreate ${skipped === 1 ? "it" : "them"} in the app, since Workers static assets don't rewrite internal paths.`,
+        );
+      }
       continue;
     }
     if (options.buildSettings && (BUILD_SETTINGS as readonly string[]).includes(key)) continue;
@@ -204,5 +411,12 @@ export function translateVercelJson(raw: string | null, options: VercelJsonOptio
     const note = Object.hasOwn(NOTES, key) ? NOTES[key] : undefined;
     manual.push(note ?? `\`${key}\` in vercel.json isn't translated.`);
   }
-  return { crons, manual };
+  return {
+    crons,
+    manual,
+    ...(redirects.length ? { redirects } : {}),
+    ...(headers.length ? { headers } : {}),
+    ...(proxyRewrites.length ? { proxyRewrites } : {}),
+    ...(htmlHandling ? { htmlHandling } : {}),
+  };
 }

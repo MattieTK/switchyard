@@ -149,6 +149,12 @@ export const prStep: Step = {
           hasSecrets: secretKeys(plan.env).length > 0,
           workersDevUrl: ctx.output("deploy").workersDevUrl,
           hasCrons: plan.vercelJson.crons.length > 0,
+          hasRouting: Boolean(
+            plan.vercelJson.redirects?.length ||
+              plan.vercelJson.headers?.length ||
+              plan.vercelJson.proxyRewrites?.length ||
+              plan.vercelJson.htmlHandling,
+          ),
           skippedEnv: plan.env.entries.flatMap((e) => (e.skipReason ? [{ key: e.key, reason: e.skipReason }] : [])),
           manual: plan.vercelJson.manual,
           features: plan.features,

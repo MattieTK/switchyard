@@ -7,6 +7,7 @@ import { editCloudflareConfig } from "../../codegen/config-edit.ts";
 import { CRON_ENTRY_FILE, cronEntrySource } from "../../codegen/cron-entry.ts";
 import { addGitignoreEntries } from "../../codegen/gitignore.ts";
 import { useNativeFetch } from "../../codegen/native-fetch.ts";
+import { PROXY_ENTRY_FILE, proxyEntrySource, proxyRunWorkerFirst } from "../../codegen/proxy-entry.ts";
 import {
   allowBuildsIn,
   approveBuilds,
@@ -31,6 +32,7 @@ import {
   type PackageManager,
   runScriptCommand,
 } from "../../translate/package-manager.ts";
+import { formatHeadersFile, formatRedirectsFile, mergeAssetRules } from "../../translate/vercel-json.ts";
 import type { Step, StepContext } from "../types.ts";
 import { repairWithAI, repairWarning } from "../ai-repair.ts";
 import { findUndeclaredImports, previousVersion } from "../undeclared-deps.ts";
@@ -310,8 +312,26 @@ export const convertStep: Step = {
     if (plan.vercelJson.crons.length && !crons.length) {
       ctx.log("Warning: the converted app has no Worker entry for cron jobs to call, so they weren't moved.");
     }
+    let entrypoint: string | undefined;
+    let assetsBinding = false;
+    let runWorkerFirst: string[] | undefined;
     if (result.baseEntrypoint && crons.length) {
       await writeFile(join(dir, CRON_ENTRY_FILE), cronEntrySource(result.baseEntrypoint, crons));
+      entrypoint = `./${CRON_ENTRY_FILE}`;
+    } else if (!result.baseEntrypoint && plan.vercelJson.proxyRewrites?.length) {
+      await writeFile(join(dir, PROXY_ENTRY_FILE), proxyEntrySource(plan.vercelJson.proxyRewrites));
+      entrypoint = `./${PROXY_ENTRY_FILE}`;
+      assetsBinding = true;
+      runWorkerFirst = proxyRunWorkerFirst(plan.vercelJson.proxyRewrites);
+      const routes = plan.vercelJson.proxyRewrites.map((p) => `${p.prefix}${p.wildcard ? "/*" : ""} -> ${p.target}`).join(", ");
+      const note = `Switchyard generated ${PROXY_ENTRY_FILE} to keep external proxy rewrites from vercel.json (${routes}). Review it before merging.`;
+      warnings.push(note);
+      ctx.log(`Warning: ${note}`);
+    }
+    const routingWarnings = await writeAssetRoutingFiles(dir, plan, Boolean(result.buildScript));
+    for (const w of routingWarnings) {
+      warnings.push(w);
+      ctx.log(`Warning: ${w}`);
     }
     await writeFile(
       configPath,
@@ -319,8 +339,11 @@ export const convertStep: Step = {
         workerName: plan.workerName,
         secretKeys: secretKeys(plan.env),
         crons,
-        entrypoint: crons.length ? `./${CRON_ENTRY_FILE}` : undefined,
+        entrypoint,
         ...(result.compatibilityFlags ? { compatibilityFlags: result.compatibilityFlags } : {}),
+        ...(plan.vercelJson.htmlHandling ? { htmlHandling: plan.vercelJson.htmlHandling } : {}),
+        ...(runWorkerFirst ? { runWorkerFirst } : {}),
+        ...(assetsBinding ? { assetsBinding } : {}),
       }),
     );
 
@@ -348,6 +371,45 @@ export const convertStep: Step = {
     ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };
+
+// Writes Cloudflare Workers static assets `_redirects` and `_headers` files translated from
+// vercel.json into the project's public/ (or unbuilt static output) directory.
+async function writeAssetRoutingFiles(
+  dir: string,
+  plan: StepContext["job"]["plan"],
+  hasBuildScript: boolean,
+): Promise<string[]> {
+  const { redirects, headers } = plan.vercelJson;
+  if (!redirects?.length && !headers?.length) return [];
+  const hasPublic = existsSync(join(dir, "public"));
+  const staticOut =
+    !hasBuildScript && plan.adapterId === "static" && plan.settings?.outputDirectory
+      ? plan.settings.outputDirectory.replace(/^\.\/+/, "").replace(/\/+$/, "")
+      : null;
+  const relDir = staticOut && staticOut !== "." ? staticOut : "public";
+  const targetDir = join(dir, relDir);
+  await mkdir(targetDir, { recursive: true });
+  const written: string[] = [];
+  if (redirects?.length) {
+    const path = join(targetDir, "_redirects");
+    const existing = await readFile(path, "utf8").catch(() => "");
+    await writeFile(path, mergeAssetRules(existing, formatRedirectsFile(redirects)));
+    written.push(`${relDir}/_redirects`);
+  }
+  if (headers?.length) {
+    const path = join(targetDir, "_headers");
+    const existing = await readFile(path, "utf8").catch(() => "");
+    await writeFile(path, mergeAssetRules(existing, formatHeadersFile(headers)));
+    written.push(`${relDir}/_headers`);
+  }
+  const extra =
+    !hasPublic && relDir === "public" && plan.adapterId === "static"
+      ? " Check that your build copies public/ into the deployed assets directory (or move the file into your static build folder)."
+      : "";
+  return [
+    `Switchyard translated vercel.json routing rules into ${written.join(" and ")} for Cloudflare Workers static assets.${extra}`,
+  ];
+}
 
 // How many times a build can be repaired by adding undeclared packages before it fails for good.
 const MAX_DEPENDENCY_REPAIRS = 3;

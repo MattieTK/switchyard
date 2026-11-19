@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { hasSpaFallback, isSpaFallback, translateVercelJson, vercelJsonBuildSettings } from "../../src/translate/vercel-json.ts";
+import {
+  formatHeadersFile,
+  formatRedirectsFile,
+  hasSpaFallback,
+  isSpaFallback,
+  mergeAssetRules,
+  translateVercelJson,
+  vercelJsonBuildSettings,
+} from "../../src/translate/vercel-json.ts";
 
 describe("translateVercelJson", () => {
   it("returns nothing for a missing file", () => {
@@ -105,40 +113,73 @@ describe("translateVercelJson", () => {
   describe("for apps Next.js doesn't serve", () => {
     const assets = { nextjs: false };
 
-    it("points routing rules at Workers static assets and skips the single-page fallback", () => {
+    it("translates redirects, headers, trailingSlash, cleanUrls, and external proxy rewrites automatically", () => {
       const t = translateVercelJson(
         JSON.stringify({
-          redirects: [{ source: "/a", destination: "/b" }],
-          headers: [{ source: "/(.*)", headers: [] }, { source: "/x", headers: [] }],
-          rewrites: [{ source: "/(.*)", destination: "/index.html" }],
+          redirects: [
+            { source: "/old", destination: "/new", permanent: true },
+            { source: "/blog/:slug", destination: "/posts/:slug", permanent: false },
+            { source: "/docs/:path*", destination: "https://docs.example.com/:path*", statusCode: 301 },
+            { source: "/gated", destination: "/login", has: [{ type: "cookie", key: "auth" }] },
+          ],
+          headers: [
+            { source: "/(.*)", headers: [{ key: "X-Frame-Options", value: "DENY" }] },
+            { source: "/assets/:path*", headers: [{ key: "Cache-Control", value: "public, max-age=31536000" }] },
+          ],
+          rewrites: [
+            { source: "/(.*)", destination: "/index.html" },
+            { source: "/api/:path*", destination: "https://api.example.com/v1/:path*" },
+            { source: "/internal", destination: "/other" },
+          ],
           cleanUrls: true,
           trailingSlash: false,
         }),
         assets,
       );
+      expect(t.htmlHandling).toBe("drop-trailing-slash");
+      expect(t.redirects).toEqual([
+        { source: "/old", destination: "/new", status: 308 },
+        { source: "/blog/:slug", destination: "/posts/:slug", status: 307 },
+        { source: "/docs/*", destination: "https://docs.example.com/:splat", status: 301 },
+      ]);
+      expect(t.headers).toEqual([
+        { source: "/*", headers: [{ key: "X-Frame-Options", value: "DENY" }] },
+        { source: "/assets/*", headers: [{ key: "Cache-Control", value: "public, max-age=31536000" }] },
+      ]);
+      expect(t.proxyRewrites).toEqual([{ prefix: "/api", target: "https://api.example.com/v1", wildcard: true }]);
       expect(t.manual).toEqual([
-        "1 redirect in vercel.json – recreate it in a `_redirects` file in the site's output folder, or in the app.",
-        "2 header rules in vercel.json – recreate them in a `_headers` file in the site's output folder.",
-        expect.stringContaining("`trailingSlash` isn't translated"),
+        expect.stringContaining("1 redirect in vercel.json couldn't be converted"),
+        expect.stringContaining("1 rewrite in vercel.json – recreate it in the app"),
       ]);
     });
 
-    it("still lists rewrites other than the fallback", () => {
-      const t = translateVercelJson(
-        JSON.stringify({ rewrites: [{ source: "/:path*", destination: "/" }, { source: "/api/:p", destination: "https://api.example.com/:p" }] }),
-        assets,
-      );
-      expect(t.manual).toEqual([expect.stringContaining("1 rewrite in vercel.json – recreate it in the app")]);
+    it("maps trailingSlash: true and cleanUrls: false to htmlHandling", () => {
+      expect(translateVercelJson(JSON.stringify({ trailingSlash: true }), assets).htmlHandling).toBe("force-trailing-slash");
+      expect(translateVercelJson(JSON.stringify({ cleanUrls: false }), assets).htmlHandling).toBe("none");
+    });
+
+    it("formats _redirects and _headers files and merges idempotently", () => {
+      const redirects = formatRedirectsFile([{ source: "/old", destination: "/new", status: 301 }]);
+      expect(redirects).toBe("/old /new 301\n");
+      const headers = formatHeadersFile([{ source: "/*", headers: [{ key: "X-Frame-Options", value: "DENY" }] }]);
+      expect(headers).toBe("/*\n  X-Frame-Options: DENY\n");
+      const merged = mergeAssetRules("/custom /dest 302\n", redirects);
+      expect(merged).toBe("/custom /dest 302\n\n# Added by Switchyard from vercel.json\n/old /new 301\n");
+      // Merging again replaces the Switchyard block rather than duplicating it.
+      expect(mergeAssetRules(merged, "/a /b 308\n")).toBe("/custom /dest 302\n\n# Added by Switchyard from vercel.json\n/a /b 308\n");
     });
   });
 
-  it("recognises catch-all rewrites to index.html", () => {
+  it("recognises catch-all rewrites and legacy routes to index.html", () => {
     expect(isSpaFallback({ source: "/(.*)", destination: "/index.html" })).toBe(true);
     expect(isSpaFallback({ source: "/:path*", destination: "/" })).toBe(true);
+    expect(isSpaFallback({ source: "/((?!api|assets).*)", destination: "/index.html" })).toBe(true);
+    expect(isSpaFallback({ source: "/([^.]*)", destination: "/index.html" })).toBe(true);
     expect(isSpaFallback({ source: "/blog/(.*)", destination: "/index.html" })).toBe(false);
     expect(isSpaFallback({ source: "/(.*)", destination: "/index.html", has: [{ type: "host", value: "x" }] })).toBe(false);
     expect(isSpaFallback(null)).toBe(false);
     expect(hasSpaFallback('{"rewrites":[{"source":"/(.*)","destination":"/index.html"}]}')).toBe(true);
+    expect(hasSpaFallback('{"routes":[{"handle":"filesystem"},{"src":"/.*","dest":"/index.html"}]}')).toBe(true);
     expect(hasSpaFallback("{nope")).toBe(false);
     expect(hasSpaFallback(null)).toBe(false);
   });

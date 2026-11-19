@@ -9,6 +9,7 @@ export interface PrBodyInput {
   hasSecrets: boolean;
   workersDevUrl?: string;
   hasCrons: boolean;
+  hasRouting?: boolean;
   skippedEnv: { key: string; reason: string }[];
   manual: string[];
   features: FeatureFinding[];
@@ -27,6 +28,9 @@ export function prBody(i: PrBodyInput): string {
         ]
       : []),
     ...(i.hasCrons ? ["- Moved Vercel Cron Jobs to Cron Triggers, run by `switchyard-entry.ts`."] : []),
+    ...(i.hasRouting
+      ? ["- Translated `vercel.json` routing rules (redirects, headers, trailing slashes, and/or external proxy rewrites) for Cloudflare Workers."]
+      : []),
   ];
   const checks = [
     i.workersDevUrl

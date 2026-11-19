@@ -21,13 +21,13 @@ export const NEXT_CACHE_FLAGS: Record<NextCachePreset, readonly string[]> = {
   none: ["--cdn-cache=none", "--data-cache=none"],
 };
 
-const LEGACY_PEER_DEPS_SETTING = /^\s*legacy[-_]peer[-_]deps\s*(=|$)/m;
+const LEGACY_PEER_DEPS_SETTING = /^([ \t]*)legacy[-_]peer[-_]deps[ \t]*(?:=[ \t]*(\S+))?[ \t]*$/m;
 
 const LEGACY_PEER_DEPS_WARNING =
   "Switchyard added legacy-peer-deps=true to .npmrc because vinext's dependencies ask for a newer React than this project pins. Check the app still works, or update React and remove the setting.";
 
 // vinext init installs a vinext release whose React peer range can be newer than
-// the project's pin, which npm rejects with ERESOLVE. Returns true when the line was added.
+// the project's pin, which npm rejects with ERESOLVE. Returns true when .npmrc changed.
 async function ensureLegacyPeerDeps(dir: string): Promise<boolean> {
   const path = join(dir, ".npmrc");
   let existing: string | null = null;
@@ -40,7 +40,15 @@ async function ensureLegacyPeerDeps(dir: string): Promise<boolean> {
     await writeFile(path, "legacy-peer-deps=true\n");
     return true;
   }
-  if (LEGACY_PEER_DEPS_SETTING.test(existing)) return false;
+  const match = LEGACY_PEER_DEPS_SETTING.exec(existing);
+  if (match) {
+    const val = match[2]?.toLowerCase();
+    // Already enabled (`legacy-peer-deps`, `legacy-peer-deps=true`, `legacy-peer-deps=1`).
+    if (val === undefined || val === "true" || val === "1") return false;
+    // Explicitly disabled (`legacy-peer-deps=false`) would fail `npm ci` on Workers Builds.
+    await writeFile(path, existing.replace(LEGACY_PEER_DEPS_SETTING, `${match[1] ?? ""}legacy-peer-deps=true`));
+    return true;
+  }
   const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
   await appendFile(path, `${separator}legacy-peer-deps=true\n`);
   return true;
@@ -128,26 +136,75 @@ async function installedPackage(dir: string, name: string): Promise<InstalledPac
   }
 }
 
+// Picks a single clean installable range from a compound semver peer range such as
+// "^5.1.4 || ^6.0.0", avoiding spaces or `||` tokens that package managers can reject.
+function targetRangeForPeer(range: string): string {
+  const branches = range
+    .split("||")
+    .map((b) => b.trim())
+    .filter((b) => b && validRange(b) !== null);
+  return branches.at(-1) ?? range.trim();
+}
+
+function majorOfRange(range: string): number | null {
+  const match = range.match(/(\d+)\./);
+  return match ? Number(match[1]) : null;
+}
+
 // vinext init installs the newest vinext 1.x, whose peer dependencies (React, the Vite
 // plugins) can be newer than the app has, and it doesn't update them. vinext's App Router
 // build stops below its React range, for example. Updates each installed peer that is
 // outside vinext's range and returns a warning for each.
-async function updateVinextPeers(ctx: ConvertContext, env: Record<string, string>): Promise<string[]> {
+async function updateVinextPeers(
+  ctx: ConvertContext,
+  env: Record<string, string>,
+  warnings: string[],
+): Promise<string[]> {
   const peers = Object.entries((await installedPackage(ctx.dir, "vinext"))?.peerDependencies ?? {});
-  const outdated: { name: string; version: string; range: string }[] = [];
+  const manifest = await readPackageJson(ctx.dir);
+  const outdated: { name: string; version: string; range: string; target: string; dev: boolean }[] = [];
   for (const [name, range] of peers) {
     const version = (await installedPackage(ctx.dir, name))?.version;
     // A peer the app doesn't have is optional for it, so it's left out.
     if (version && validRange(range) && !satisfies(version, range, { includePrerelease: true })) {
-      outdated.push({ name, version, range });
+      const dev = Boolean(manifest?.devDependencies && name in manifest.devDependencies && !(manifest.dependencies && name in manifest.dependencies));
+      outdated.push({ name, version, range, target: targetRangeForPeer(range), dev });
     }
   }
   if (!outdated.length) return [];
-  const add = addCommand(ctx.pm, outdated.map((p) => `${p.name}@${p.range}`));
-  await runOrThrow(ctx.run, add.cmd, add.args, { cwd: ctx.dir, onLine: ctx.log, env });
+
+  // Keep @types/react and @types/react-dom aligned when updating React so TypeScript builds stay green.
+  for (const base of ["react", "react-dom"] as const) {
+    const reactUpdate = outdated.find((p) => p.name === base);
+    const targetMajor = reactUpdate ? majorOfRange(reactUpdate.target) : null;
+    if (!targetMajor) continue;
+    const typesName = `@types/${base}`;
+    const installedTypes = (await installedPackage(ctx.dir, typesName))?.version;
+    const typesMajor = installedTypes ? majorOfRange(installedTypes) : null;
+    if (installedTypes && typesMajor !== null && typesMajor < targetMajor) {
+      outdated.push({
+        name: typesName,
+        version: installedTypes,
+        range: `^${targetMajor}`,
+        target: `^${targetMajor}`,
+        dev: true,
+      });
+    }
+  }
+
+  const prod = outdated.filter((p) => !p.dev);
+  const dev = outdated.filter((p) => p.dev);
+  if (prod.length) {
+    const add = addCommand(ctx.pm, prod.map((p) => `${p.name}@${p.target}`));
+    await runInstall(ctx, add, env, warnings, "the peer dependency update");
+  }
+  if (dev.length) {
+    const add = addCommand(ctx.pm, dev.map((p) => `${p.name}@${p.target}`), { dev: true });
+    await runInstall(ctx, add, env, warnings, "the dev peer dependency update");
+  }
   return outdated.map(
     (p) =>
-      `Switchyard updated ${p.name} from ${p.version} to ${p.range}, because vinext needs a version in that range. Check the app still works with it.`,
+      `Switchyard updated ${p.name} from ${p.version} to ${p.target}, because vinext needs a version in that range. Check the app still works with it.`,
   );
 }
 
@@ -388,7 +445,7 @@ export const nextjsAdapter: Adapter = {
     await allowMissingExports(ctx.dir);
     const standaloneWarning = await standaloneOutsideCloudflare(ctx.dir);
     if (standaloneWarning) warnings.push(standaloneWarning);
-    warnings.push(...(await updateVinextPeers(ctx, env)));
+    warnings.push(...(await updateVinextPeers(ctx, env, warnings)));
     const buildScript = await writeCloudflareBuildScript(ctx, warnings, NEXT_BUILD);
     return { baseEntrypoint: "vinext/server/fetch-handler", warnings, ...(buildScript ? { buildScript } : {}) };
   },

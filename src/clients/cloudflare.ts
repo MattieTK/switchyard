@@ -63,7 +63,14 @@ export interface BuildTrigger {
   trigger_uuid: string;
   trigger_name: string;
   build_token_uuid?: string;
+  build_command?: string;
+  deploy_command?: string;
+  root_directory?: string;
 }
+
+export type TriggerPatch = Partial<
+  Pick<TriggerInput, "build_token_uuid" | "build_command" | "deploy_command" | "root_directory">
+>;
 
 export interface BuildInfo {
   build_uuid: string;
@@ -83,6 +90,7 @@ export interface CloudflareClient {
   listBuildTokens(accountId: string): Promise<BuildToken[]>;
   createBuildToken(accountId: string, input: BuildTokenInput): Promise<BuildToken>;
   setTriggerBuildToken(accountId: string, triggerUuid: string, buildTokenUuid: string): Promise<void>;
+  updateTrigger(accountId: string, triggerUuid: string, patch: TriggerPatch): Promise<void>;
   putRepoConnection(accountId: string, input: RepoConnectionInput): Promise<string>;
   listTriggers(accountId: string, workerTag: string): Promise<BuildTrigger[]>;
   createTrigger(accountId: string, input: TriggerInput): Promise<BuildTrigger>;
@@ -160,6 +168,12 @@ export function createCloudflareClient(o: { fetch: FetchFn; token: () => Promise
       await call(`${acct(accountId)}/builds/triggers/${encodeURIComponent(triggerUuid)}`, {
         method: "PATCH",
         body: { build_token_uuid: buildTokenUuid },
+      });
+    },
+    async updateTrigger(accountId, triggerUuid, patch) {
+      await call(`${acct(accountId)}/builds/triggers/${encodeURIComponent(triggerUuid)}`, {
+        method: "PATCH",
+        body: patch,
       });
     },
     async putRepoConnection(accountId, input) {

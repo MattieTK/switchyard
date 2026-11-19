@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   responseText,
@@ -94,6 +94,13 @@ function tools(task: RepairTask): FunctionTool[] {
     tool("write_file", "Creates a file, or replaces all of an existing file's contents.", {
       path: string("Relative to the repository root."),
       content: string("The whole file."),
+    }),
+    tool("delete_file", "Deletes a file in the repository.", {
+      path: string("Relative to the repository root."),
+    }),
+    tool("rename_file", "Renames or moves a file within the repository (for example, .js to .cjs).", {
+      from: string("Existing file path relative to the repository root."),
+      to: string("New file path relative to the repository root."),
     }),
     tool("add_packages", "Adds npm packages to the project's package.json and installs them with its package manager.", {
       packages: { type: "array", items: { type: "string" }, description: "Package names, each optionally with @version." },
@@ -213,61 +220,69 @@ async function converse(
   model: string,
 ): Promise<RepairResult> {
   const workspace = await createWorkspace(ctx, task, repoDir);
-  const result = (fixed: boolean, summary: string): RepairResult => ({
-    fixed,
-    model,
-    summary,
-    changed: [...workspace.changed],
-    ...(fixed && workspace.lastRun?.code === 0 ? { passed: workspace.lastRun } : {}),
-  });
+  const finishWith = async (fixed: boolean, summary: string): Promise<RepairResult> => {
+    if (!fixed) await workspace.rollback();
+    return {
+      fixed,
+      model,
+      summary,
+      changed: fixed ? [...workspace.changed] : [],
+      ...(fixed && workspace.lastRun?.code === 0 ? { passed: workspace.lastRun } : {}),
+    };
+  };
 
   // Nothing is stored at OpenAI between requests, so each one sends the whole conversation.
   const input: InputItem[] = [{ role: "user", content: ctx.redact(`${task.what} failed. Its output:\n\n${tail(task.output)}`) }];
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const response = await client.respond({
-      model,
-      instructions: ctx.redact(instructions(ctx, task, repoDir)),
-      input: [...input],
-      tools: tools(task),
-    });
-    // Item ids refer to stored items, so they're left out when the output is sent back.
-    input.push(...response.output.map(({ id: _id, ...item }) => item as ResponseItem));
-    const text = responseText(response);
-    // One log line each, since the job page shows the log line by line.
-    for (const line of text.split("\n")) if (line.trim()) ctx.log(`OpenAI says: ${line}`);
+  try {
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      const response = await client.respond({
+        model,
+        instructions: ctx.redact(instructions(ctx, task, repoDir)),
+        input: [...input],
+        tools: tools(task),
+      });
+      // Item ids refer to stored items, so they're left out when the output is sent back.
+      input.push(...response.output.map(({ id: _id, ...item }) => item as ResponseItem));
+      const text = responseText(response);
+      // One log line each, since the job page shows the log line by line.
+      for (const line of text.split("\n")) if (line.trim()) ctx.log(`OpenAI says: ${line}`);
 
-    const calls = response.output.filter(isCall);
-    if (!calls.length) {
-      const reason = response.incomplete_details?.reason;
-      return result(false, text || (reason ? `The response stopped early (${reason}).` : "It stopped without finishing."));
-    }
-    // Finish is handled after the other calls of the same turn, so their changes count.
-    const finish = calls.find((c) => c.name === "finish");
-    const outputs: FunctionCallOutput[] = [];
-    for (const call of calls.filter((c) => c !== finish)) {
-      outputs.push({ type: "function_call_output", call_id: call.call_id, output: ctx.redact(await workspace.call(call)) });
-    }
-    if (finish) {
-      const args = parseArgs(finish.arguments) as { fixed?: boolean; summary?: string };
-      const summary = String(args.summary ?? "").replace(/\s+/g, " ").trim() || "No summary given.";
-      if (!args.fixed) return result(false, summary);
-      // Take the model's word only for a check that ran after its last change.
-      if (workspace.dirty || workspace.lastRun?.code !== 0) {
-        if (workspace.checksLeft === 0) return result(false, `${summary} (Not confirmed: run_check had no runs left.)`);
-        const run = await workspace.check();
-        if (run.code === 0) return result(true, summary);
-        outputs.push({
-          type: "function_call_output",
-          call_id: finish.call_id,
-          output: ctx.redact(`Not finished: ${task.what} still fails. ${describeRun(run)}`),
-        });
-      } else {
-        return result(true, summary);
+      const calls = response.output.filter(isCall);
+      if (!calls.length) {
+        const reason = response.incomplete_details?.reason;
+        return finishWith(false, text || (reason ? `The response stopped early (${reason}).` : "It stopped without finishing."));
       }
+      // Finish is handled after the other calls of the same turn, so their changes count.
+      const finish = calls.find((c) => c.name === "finish");
+      const outputs: FunctionCallOutput[] = [];
+      for (const call of calls.filter((c) => c !== finish)) {
+        outputs.push({ type: "function_call_output", call_id: call.call_id, output: ctx.redact(await workspace.call(call)) });
+      }
+      if (finish) {
+        const args = parseArgs(finish.arguments) as { fixed?: boolean; summary?: string };
+        const summary = String(args.summary ?? "").replace(/\s+/g, " ").trim() || "No summary given.";
+        if (!args.fixed) return finishWith(false, summary);
+        // Take the model's word only for a check that ran after its last change.
+        if (workspace.dirty || workspace.lastRun?.code !== 0) {
+          if (workspace.checksLeft === 0) return finishWith(false, `${summary} (Not confirmed: run_check had no runs left.)`);
+          const run = await workspace.check();
+          if (run.code === 0) return finishWith(true, summary);
+          outputs.push({
+            type: "function_call_output",
+            call_id: finish.call_id,
+            output: ctx.redact(`Not finished: ${task.what} still fails. ${describeRun(run)}`),
+          });
+        } else {
+          return finishWith(true, summary);
+        }
+      }
+      input.push(...outputs);
     }
-    input.push(...outputs);
+    return finishWith(false, `It hadn't fixed ${task.what} after ${MAX_TURNS} turns.`);
+  } catch (e) {
+    await workspace.rollback();
+    throw e;
   }
-  return result(false, `It hadn't fixed ${task.what} after ${MAX_TURNS} turns.`);
 }
 
 const isCall = (item: ResponseItem): item is Extract<ResponseItem, { type: "function_call" }> => item.type === "function_call";
@@ -285,8 +300,27 @@ function parseArgs(text: string): Record<string, unknown> {
 async function createWorkspace(ctx: StepContext, task: RepairTask, repoDir: string) {
   const root = await realpath(repoDir);
   const changed = new Set<string>();
+  // Original contents (or null when created by AI) for every file touched, so failed repairs roll back cleanly.
+  const snapshots = new Map<string, Buffer | null>();
   let checks = 0;
   const state = { dirty: false, lastRun: null as RunResult | null };
+
+  async function remember(abs: string): Promise<void> {
+    if (snapshots.has(abs)) return;
+    snapshots.set(abs, await readFile(abs).catch(() => null));
+  }
+
+  async function rollback(): Promise<void> {
+    for (const [abs, original] of snapshots) {
+      if (original === null) await rm(abs, { force: true }).catch(() => {});
+      else {
+        await mkdir(dirname(abs), { recursive: true });
+        await writeFile(abs, original);
+      }
+    }
+    changed.clear();
+    state.dirty = false;
+  }
 
   // A path inside the working copy, outside .git, and for writes outside node_modules too.
   // Symbolic links are followed, so a link can't lead out of the working copy.
@@ -320,6 +354,7 @@ async function createWorkspace(ctx: StepContext, task: RepairTask, repoDir: stri
   }
 
   async function edit(rel: string, abs: string, text: string): Promise<void> {
+    await remember(abs);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, text);
     changed.add(rel);
@@ -377,6 +412,31 @@ async function createWorkspace(ctx: StepContext, task: RepairTask, repoDir: stri
       await edit(rel, abs, String(content));
       return `Wrote ${rel}.`;
     },
+    async delete_file({ path }) {
+      const { abs, rel } = await resolvePath(String(path), { write: true });
+      if (!existsSync(abs)) throw new ToolError(`${rel} doesn't exist.`);
+      await remember(abs);
+      ctx.log(`OpenAI: deleting ${rel}`);
+      await rm(abs, { force: true });
+      changed.add(rel);
+      state.dirty = true;
+      return `Deleted ${rel}.`;
+    },
+    async rename_file({ from, to }) {
+      const src = await resolvePath(String(from), { write: true });
+      const dst = await resolvePath(String(to), { write: true });
+      if (!existsSync(src.abs)) throw new ToolError(`${src.rel} doesn't exist.`);
+      if (existsSync(dst.abs)) throw new ToolError(`${dst.rel} already exists.`);
+      await remember(src.abs);
+      await remember(dst.abs);
+      await mkdir(dirname(dst.abs), { recursive: true });
+      ctx.log(`OpenAI: renaming ${src.rel} to ${dst.rel}`);
+      await rename(src.abs, dst.abs);
+      changed.add(src.rel);
+      changed.add(dst.rel);
+      state.dirty = true;
+      return `Renamed ${src.rel} to ${dst.rel}.`;
+    },
     async add_packages({ packages, dev }) {
       const specs = Array.isArray(packages) ? packages.map(String) : [];
       const invalid = specs.filter((p) => !PACKAGE_SPEC.test(p));
@@ -413,6 +473,7 @@ async function createWorkspace(ctx: StepContext, task: RepairTask, repoDir: stri
       return MAX_CHECKS - checks;
     },
     check,
+    rollback,
     async call(c: { name: string; arguments: string }): Promise<string> {
       const handler = handlers[c.name];
       if (!handler) return `Error: there is no tool called ${c.name}.`;

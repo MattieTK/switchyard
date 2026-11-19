@@ -1,7 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  STAGE_DIR,
+  STAGE_SCRIPT,
   staticAdapter,
   staticBuildCommand,
   staticBuildScript,
@@ -23,6 +26,8 @@ describe("static site helpers", () => {
   it("finds the built site where Vercel did", () => {
     expect(staticOutputDirectory(settings({ framework: "create-react-app" }), [])).toBe("build");
     expect(staticOutputDirectory(settings({ framework: "gatsby" }), [])).toBe("public");
+    expect(staticOutputDirectory(settings({ framework: "vitepress" }), [])).toBe(".vitepress/dist");
+    expect(staticOutputDirectory(settings({ framework: "vite" }), [])).toBe("dist");
     // A folder set on the project wins over the preset's.
     expect(staticOutputDirectory(settings({ framework: "create-react-app", outputDirectory: "./out/" }), [])).toBe("out");
     // Without a framework, Vercel serves public/ when there is one and the folder itself otherwise.
@@ -39,9 +44,15 @@ describe("static site helpers", () => {
     expect(staticBuildCommand(settings(), null, "npm")).toBeNull();
   });
 
-  it("keeps cf build in the project's folder after a build that changes folder", () => {
-    expect(staticBuildScript("npm run build")).toBe("npm run build && cf build");
-    expect(staticBuildScript("cd ../.. && turbo run build --filter=web")).toBe("(cd ../.. && turbo run build --filter=web) && cf build");
+  it("packages the assets folder with cf deploy --dry-run and keeps cd in a subshell", () => {
+    expect(staticBuildScript("npm run build", "build")).toBe("npm run build && cf deploy build --dry-run");
+    expect(staticBuildScript("cd ../.. && turbo run build --filter=web", "dist")).toBe(
+      "(cd ../.. && turbo run build --filter=web) && cf deploy dist --dry-run",
+    );
+    expect(staticBuildScript(null, "public")).toBe("cf deploy public --dry-run");
+    expect(staticBuildScript(null, STAGE_DIR, { stage: true })).toBe(
+      `node ${STAGE_SCRIPT} && cf deploy ${STAGE_DIR} --dry-run`,
+    );
   });
 
   it("writes a config for single-page apps and for sites with 404 pages", () => {
@@ -64,14 +75,18 @@ describe("staticAdapter", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("matches static presets and projects without a framework, unless cf would find one", () => {
+  it("matches static presets (even with Vite), Vite < 6 SPAs, and framework-less sites", () => {
     expect(staticAdapter.matches({ vercelFramework: "create-react-app", packageJson: null })).toBe(true);
+    expect(staticAdapter.matches({ vercelFramework: "storybook", packageJson: { devDependencies: { vite: "7" } } })).toBe(true);
+    expect(staticAdapter.matches({ vercelFramework: "vitepress", packageJson: { devDependencies: { vitepress: "1", vite: "6" } } })).toBe(true);
+    expect(staticAdapter.matches({ vercelFramework: "vite", packageJson: { devDependencies: { vite: "^5.4.0" } } })).toBe(true);
+    expect(staticAdapter.matches({ vercelFramework: "vite", packageJson: { devDependencies: { vite: "^6.0.0" } } })).toBe(false);
+    expect(staticAdapter.matches({ vercelFramework: null, packageJson: { devDependencies: { vite: "^5.4.0" } } })).toBe(true);
     expect(staticAdapter.matches({ vercelFramework: null, packageJson: null })).toBe(true);
     expect(staticAdapter.matches({ vercelFramework: "sveltekit", packageJson: null })).toBe(false);
-    expect(staticAdapter.matches({ vercelFramework: "storybook", packageJson: { devDependencies: { vite: "7" } } })).toBe(false);
   });
 
-  it("sets up a Create React App site with its build and single-page fallback", async () => {
+  it("sets up a Create React App site with cf only (no Wrangler) and single-page fallback", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ name: "shop", scripts: { build: "react-scripts build" } }));
     const { run, calls } = fakeRunner();
     const result = await staticAdapter.convert({
@@ -83,18 +98,19 @@ describe("staticAdapter", () => {
       log: () => {},
       options: { nextCache: "kv" },
     });
-    expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([["npm", "install", "-D", "cf@1.0.0-beta.25", "wrangler@4.155.0"]]);
+    expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([["npm", "install", "-D", "cf@1.0.0-rc.1"]]);
     expect(result.buildScript).toBe("build:cloudflare");
+    expect(result.deployDirectory).toBe("build");
     const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { scripts: Record<string, string> };
-    expect(manifest.scripts["build:cloudflare"]).toBe("npm run build && cf build");
-    expect(await readFile(join(dir, "wrangler.config.ts"), "utf8")).toContain('assetsDirectory: "build"');
+    expect(manifest.scripts["build:cloudflare"]).toBe("npm run build && cf deploy build --dry-run");
+    expect(existsSync(join(dir, "wrangler.config.ts"))).toBe(false);
     const config = await readFile(join(dir, "cloudflare.config.ts"), "utf8");
     expect(config).toContain('name: "shop"');
     expect(config).toContain('"single-page-application"');
-    expect(await readFile(join(dir, ".gitignore"), "utf8")).toContain(".wrangler/");
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toContain("build/");
   });
 
-  it("serves a plain site's public folder as it is, and gives it a package.json", async () => {
+  it("serves a plain site's public folder with cf only, and gives it a package.json", async () => {
     await mkdir(join(dir, "public"));
     await writeFile(join(dir, "public", "index.html"), "<h1>hi</h1>");
     const { run, calls } = fakeRunner();
@@ -107,11 +123,35 @@ describe("staticAdapter", () => {
       log: () => {},
       options: { nextCache: "kv" },
     });
-    expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([["pnpm", "add", "-D", "cf@1.0.0-beta.25", "wrangler@4.155.0"]]);
-    expect(result.buildScript).toBeUndefined();
-    expect(result.warnings).toEqual([expect.stringContaining("had no package.json")]);
-    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8"))).toEqual({ name: "site", private: true });
+    expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([["pnpm", "add", "-D", "cf@1.0.0-rc.1"]]);
+    expect(result.buildScript).toBe("build:cloudflare");
+    expect(result.deployDirectory).toBe("public");
+    expect(result.warnings).toContainEqual(expect.stringContaining("had no package.json"));
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8"))).toEqual({
+      name: "site",
+      private: true,
+      scripts: { "build:cloudflare": "cf deploy public --dry-run" },
+    });
     expect(await readFile(join(dir, "cloudflare.config.ts"), "utf8")).toContain('"404-page"');
+  });
+
+  it("stages sites served from the repository root into .switchyard-assets", async () => {
+    await writeFile(join(dir, "index.html"), "<h1>root</h1>");
+    const { run } = fakeRunner();
+    const result = await staticAdapter.convert({
+      dir,
+      workerName: "root-site",
+      settings: settings(),
+      pm: "npm",
+      run,
+      log: () => {},
+      options: { nextCache: "kv" },
+    });
+    expect(result.deployDirectory).toBe(STAGE_DIR);
+    expect(existsSync(join(dir, STAGE_SCRIPT))).toBe(true);
+    const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(manifest.scripts["build:cloudflare"]).toBe(`node ${STAGE_SCRIPT} && cf deploy ${STAGE_DIR} --dry-run`);
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toContain(`${STAGE_DIR}/`);
   });
 
   it("treats a site with a catch-all rewrite in vercel.json as a single-page app", async () => {
@@ -129,14 +169,7 @@ describe("staticAdapter", () => {
     expect(await readFile(join(dir, "cloudflare.config.ts"), "utf8")).toContain('"single-page-application"');
   });
 
-  it("blocks sites served from the repository folder itself", () => {
-    expect(staticAdapter.planBlockers?.(null, { settings: settings(), projectFiles: ["index.html"] })).toEqual([
-      expect.stringContaining("Move the site's files into a public/ folder"),
-    ]);
-    expect(staticAdapter.planBlockers?.(null, { settings: settings(), projectFiles: ["public"] })).toEqual([]);
-  });
-
-  it("says in the plan which folder it serves and how", () => {
+  it("says in the plan how it serves a built folder, a repo-root site, and a Vite 5 SPA", () => {
     const [summary] = staticAdapter.planWarnings?.(
       { scripts: { build: "gatsby build" } },
       {},
@@ -145,5 +178,13 @@ describe("staticAdapter", () => {
     expect(summary).toBe(
       "Switchyard will serve public/ as static assets, after building the site as Vercel did. Paths without a file serve the nearest 404.html.",
     );
+    const [rootWarning] = staticAdapter.planWarnings?.(null, {}, { settings: settings(), projectFiles: ["index.html"] }) ?? [];
+    expect(rootWarning).toContain(STAGE_SCRIPT);
+    const vite5Warnings = staticAdapter.planWarnings?.(
+      { devDependencies: { vite: "^5.4.0" }, scripts: { build: "vite build" } },
+      {},
+      { settings: settings({ framework: "vite" }), projectFiles: ["package.json"] },
+    );
+    expect(vite5Warnings?.[0]).toContain("Vite 5");
   });
 });

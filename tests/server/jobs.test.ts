@@ -15,7 +15,7 @@ describe("project routes", () => {
     const vercel = {
       listProjects: async () => [
         { id: "p1", name: "shop", framework: "nextjs", rootDirectory: null, link: { type: "github", org: "acme", repo: "shop", productionBranch: "main" } },
-        { id: "p2", name: "blog", framework: "astro", rootDirectory: null },
+        { id: "p2", name: "blog", framework: "sveltekit", rootDirectory: null },
       ],
     } as unknown as VercelClient;
     const { req } = await makeApp({ clients: { vercel: async () => vercel } as unknown as ClientFactory });
@@ -24,11 +24,11 @@ describe("project routes", () => {
       {
         id: "p2",
         name: "blog",
-        framework: "astro",
-        frameworkName: "Astro",
+        framework: "sveltekit",
+        frameworkName: "SvelteKit",
         repo: null,
         productionBranch: null,
-        support: { level: "unsupported", reason: "The Cloudflare build tool (cf) can't build Astro projects yet." },
+        support: { level: "unsupported", reason: "The Cloudflare build tool (cf) doesn't support SvelteKit yet." },
       },
     ]);
   });

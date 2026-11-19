@@ -151,6 +151,17 @@ describe("deployStep", () => {
     expect(existsSync(secretsPath)).toBe(false);
   });
 
+  it("deploys with --prebuilt when convert packaged a static assets directory", async () => {
+    const { run, calls } = fakeRunner(() => ({ code: 0, output: "  https://docs.acme.workers.dev\n" }));
+    const cloudflare = { getWorkerTag: vi.fn(async () => "tag-2") } as unknown as CloudflareClient;
+    const { ctx } = makeContext({
+      deps: { run, cloudflare },
+      outputs: { convert: { projectDir: "/w/docs", buildScript: "build:cloudflare", deployDirectory: "build" } },
+    });
+    await deployStep.run(ctx);
+    expect(calls[0]?.args).toEqual(["exec", "cf", "deploy", "--prebuilt", "--message", "First deploy by Switchyard"]);
+  });
+
   it("skips the secrets file when there are no runtime secrets", async () => {
     const { run, calls } = fakeRunner(() => ({ code: 0, output: "" }));
     const cloudflare = { getWorkerTag: async () => "tag-1" } as unknown as CloudflareClient;

@@ -345,6 +345,7 @@ export const convertStep: Step = {
 
     ctx.outputs.projectDir = dir;
     if (result.buildScript) ctx.outputs.buildScript = result.buildScript;
+    if (result.deployDirectory) ctx.outputs.deployDirectory = result.deployDirectory;
     ctx.outputs.warnings = JSON.stringify(warnings);
   },
 };

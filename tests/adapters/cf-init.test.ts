@@ -18,7 +18,7 @@ export default defineConfig({
 });
 `;
 
-const QUARANTINED = '➤ YN0016: │ cf@npm:1.0.0-beta.25: All versions satisfying "1.0.0-beta.25" are quarantined';
+const QUARANTINED = '➤ YN0016: │ cf@npm:1.0.0-rc.1: All versions satisfying "1.0.0-rc.1" are quarantined';
 
 const RR_CONFIG = VITE_CONFIG.replace('"assets": {\n      "notFoundHandling": "single-page-application"\n    }', '"entrypoint": "./workers/app.ts"');
 
@@ -44,7 +44,7 @@ describe("cf init adapters", () => {
     const result = await viteAdapter.convert({ dir, pm: "pnpm", run, log: () => {}, options: { nextCache: "kv" } });
     expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([
       ["pnpm", "install"],
-      ["pnpm", "dlx", "cf@1.0.0-beta.25", "init", "."],
+      ["pnpm", "dlx", "cf@1.0.0-rc.1", "init", "."],
     ]);
     expect(calls[1]?.opts?.env).toMatchObject({ CI: "1" });
     // An assets-only Worker has no entry for crons, and vite build alone needs no script.

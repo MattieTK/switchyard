@@ -45,6 +45,9 @@ export interface ConvertResult {
   baseEntrypoint?: string;
   // package.json script that builds for Cloudflare, when cf build alone would skip steps.
   buildScript?: string;
+  // Assets directory already packaged into .cloudflare/output by buildScript (via `cf deploy <dir> --dry-run`),
+  // so deployStep uploads it with `cf deploy --prebuilt` without running framework auto-detection.
+  deployDirectory?: string;
   // Compatibility flags the Worker needs, which the convert step adds to cloudflare.config.ts.
   compatibilityFlags?: readonly string[];
   warnings: string[];

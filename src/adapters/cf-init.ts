@@ -17,6 +17,10 @@ const CF_INIT_FILES = [
   "vite.config.mts",
   "vite.config.js",
   "vite.config.mjs",
+  "astro.config.mjs",
+  "astro.config.mts",
+  "astro.config.ts",
+  "astro.config.js",
   ".gitignore",
   "tsconfig.json",
   "workers/app.ts",
@@ -118,10 +122,55 @@ export const viteAdapter = cfInitAdapter({
   build: { command: "vite build", label: "Vite", pattern: /^(.*?)\bvite\s+build\b.*$/ },
   detectedBy: ["vite"],
   minimum: { package: "vite", major: 6 },
-  // Vercel names other Vite-based frameworks after themselves, which other adapters handle or refuse.
+  // Vite < 6 SPAs fall through to staticAdapter, which builds as Vercel did and deploys with `cf deploy <dir>`.
+  matches: (input) => {
+    const major = declaredMajor(input.packageJson, "vite");
+    if (major !== null && major < 6) return false;
+    return (
+      input.vercelFramework === "vite" ||
+      (input.vercelFramework === null && "vite" in allDependencies(input.packageJson) && !detectedFrameworks(input.packageJson, ["vite"]).length)
+    );
+  },
+});
+
+export const astroAdapter = cfInitAdapter({
+  id: "astro",
+  label: "Astro",
+  serverRuntime: true,
+  prSummary:
+    "Set the app up to run on Cloudflare Workers with `cf init` (`astro.config.*`, `cloudflare.config.ts` and new scripts in `package.json`).",
+  build: { command: "astro build", label: "Astro", pattern: /^(.*?)\bastro\s+build\b.*$/ },
+  detectedBy: ["astro", "vite"],
+  minimum: { package: "astro", major: 7 },
+  matches: (input) => input.vercelFramework === "astro" || "astro" in allDependencies(input.packageJson),
+});
+
+export const tanstackStartAdapter = cfInitAdapter({
+  id: "tanstack-start",
+  label: "TanStack Start",
+  serverRuntime: true,
+  prSummary:
+    "Set the app up to run on Cloudflare Workers with `cf init` and the Cloudflare Vite plugin (`vite.config.ts`, `cloudflare.config.ts` and new scripts in `package.json`).",
+  build: { command: "vite build", label: "TanStack Start", pattern: /^(.*?)\bvite\s+build\b.*$/ },
+  compatibilityFlags: ["nodejs_compat"],
+  detectedBy: ["@tanstack/react-start", "vite"],
+  matches: (input) => input.vercelFramework === "tanstack-start" || "@tanstack/react-start" in allDependencies(input.packageJson),
+});
+
+export const solidStartAdapter = cfInitAdapter({
+  id: "solid-start",
+  label: "SolidStart",
+  serverRuntime: true,
+  prSummary:
+    "Set the app up to run on Cloudflare Workers with `cf init` and the Cloudflare Vite plugin (`cloudflare.config.ts` and new scripts in `package.json`).",
+  build: { command: "vite build", label: "SolidStart", pattern: /^(.*?)\b(?:vinxi|vite)\s+build\b.*$/ },
+  compatibilityFlags: ["nodejs_compat"],
+  detectedBy: ["@solidjs/start", "vite"],
+  minimum: { package: "@solidjs/start", major: 2 },
   matches: (input) =>
-    input.vercelFramework === "vite" ||
-    (input.vercelFramework === null && "vite" in allDependencies(input.packageJson) && !detectedFrameworks(input.packageJson, ["vite"]).length),
+    input.vercelFramework === "solidstart" ||
+    input.vercelFramework === "solidstart-1" ||
+    "@solidjs/start" in allDependencies(input.packageJson),
 });
 
 const REACT_ROUTER_CONFIGS = ["react-router.config.ts", "react-router.config.js", "react-router.config.mjs"];

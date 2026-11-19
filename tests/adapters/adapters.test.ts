@@ -619,9 +619,18 @@ describe("registry", () => {
     expect(pick(null, { dependencies: { next: "16", vite: "7" } })).toBe("nextjs");
     expect(pick("react-router")).toBe("react-router");
     expect(pick(null, { devDependencies: { "@react-router/dev": "7", vite: "7" } })).toBe("react-router");
+    expect(pick("astro")).toBe("astro");
+    expect(pick(null, { dependencies: { astro: "7" } })).toBe("astro");
+    expect(pick("tanstack-start")).toBe("tanstack-start");
+    expect(pick(null, { dependencies: { "@tanstack/react-start": "1.140.0", vite: "7" } })).toBe("tanstack-start");
+    expect(pick("solidstart")).toBe("solid-start");
     expect(pick("vite")).toBe("vite");
+    expect(pick("vite", { devDependencies: { vite: "^5.4.0" } })).toBe("static");
     expect(pick(null, { devDependencies: { vite: "7" }, dependencies: { "react-router": "7" } })).toBe("vite");
+    expect(pick(null, { devDependencies: { vite: "^5.4.0" } })).toBe("static");
     expect(pick("create-react-app")).toBe("static");
+    expect(pick("storybook", { devDependencies: { vite: "7" } })).toBe("static");
+    expect(pick("vitepress", { devDependencies: { vitepress: "1", vite: "6" } })).toBe("static");
     expect(pick("gatsby", { dependencies: { gatsby: "5" } })).toBe("static");
     expect(pick(null, { scripts: { build: "eleventy" } })).toBe("static");
     expect(adapterById("nextjs")).toBe(pickAdapter({ vercelFramework: "nextjs", packageJson: null }).adapter);
@@ -633,19 +642,13 @@ describe("registry", () => {
       adapter: null,
       support: { level: "unsupported", reason: "The Cloudflare build tool (cf) doesn't support SvelteKit yet." },
     });
-    expect(supportForFramework("remix").reason).toContain("React Router 7");
+    expect(supportForFramework("remix").reason).toContain("React Router");
     expect(supportForFramework("blitzjs")).toEqual({ level: "unsupported", reason: "blitzjs projects aren't supported yet." });
-    // Vercel saw no framework, but cf would find Astro and build it.
-    expect(pickAdapter({ vercelFramework: null, packageJson: { dependencies: { astro: "5" } } }).support).toEqual({
+    // Vercel saw no framework, but cf would find Nuxt and build it.
+    expect(pickAdapter({ vercelFramework: null, packageJson: { dependencies: { nuxt: "3" } } }).support).toEqual({
       level: "unsupported",
-      reason: "This project uses Astro, which Switchyard can't move yet.",
+      reason: "This project uses Nuxt, which Switchyard can't move yet.",
     });
-  });
-
-  it("says when cf would build a static preset as another framework", () => {
-    expect(pickAdapter({ vercelFramework: "storybook", packageJson: { devDependencies: { vite: "7" } } }).support.reason).toBe(
-      "This Storybook project depends on Vite, so the Cloudflare build tool (cf) would build it as a Vite app instead. Switchyard can't move it yet.",
-    );
   });
 
   it("marks projects without a framework as partly supported until the plan checks them", () => {

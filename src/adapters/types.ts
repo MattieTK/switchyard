@@ -25,6 +25,7 @@ export interface ProjectSettings {
   framework: string | null;
   buildCommand: string | null;
   outputDirectory: string | null;
+  installCommand?: string | null;
 }
 
 export const NO_PROJECT_SETTINGS: ProjectSettings = { framework: null, buildCommand: null, outputDirectory: null };

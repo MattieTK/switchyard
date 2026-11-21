@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { NO_PROJECT_SETTINGS } from "../../adapters/types.ts";
 import { gitAuthEnv } from "../../auth/github.ts";
 import { editCloudflareConfig } from "../../codegen/config-edit.ts";
@@ -18,7 +18,7 @@ import {
   undecidedBuilds,
   YARN_1_VERSION,
 } from "../../codegen/toolchain-files.ts";
-import { MIGRATION_BRANCH } from "../../config.ts";
+import { migrationBranchFor } from "../../config.ts";
 import { CommandError, runOrThrow } from "../../exec.ts";
 import { devVarsFile, secretKeys } from "../../translate/env-plan.ts";
 import { parsePackageJson } from "../../translate/package-json.ts";
@@ -66,7 +66,8 @@ export const cloneStep: Step = {
         { env: gitAuthEnv(token), onLine: ctx.log },
       );
     }
-    await git(ctx, dir)(["checkout", "-B", MIGRATION_BRANCH, `origin/${repo.productionBranch}`]);
+    const branch = migrationBranchFor(ctx.job.plan.workerName, repo.rootDirectory);
+    await git(ctx, dir)(["checkout", "-B", branch, `origin/${repo.productionBranch}`]);
     ctx.outputs.dir = dir;
   },
 };
@@ -167,31 +168,45 @@ async function decideIgnoredBuilds(
   ];
 }
 
-// Removes lockfiles of package managers the project doesn't use. vinext and cf choose a
-// package manager from the lockfiles they find, so a stray yarn.lock in a pnpm project
-// makes them run Yarn. Returns a warning when anything was removed.
-async function removeOtherLockfiles(dir: string, pm: PackageManager): Promise<string | null> {
-  const other = [...Object.values(LOCKFILES).flat(), "bun.lockb"].filter(
-    (f) => !LOCKFILES[pm].includes(f) && !(pm === "bun" && f === "bun.lockb") && existsSync(join(dir, f)),
+// Removes lockfiles of package managers the project doesn't use, in the project folder and
+// (for monorepos) at the repository root. vinext and cf choose a package manager from the
+// lockfiles they find, so a stray yarn.lock in a pnpm project makes them run Yarn.
+async function removeOtherLockfiles(projectDir: string, repoDir: string, pm: PackageManager): Promise<string | null> {
+  const candidates = [...Object.values(LOCKFILES).flat(), "bun.lockb"].filter(
+    (f) => !LOCKFILES[pm].includes(f) && !(pm === "bun" && f === "bun.lockb"),
   );
-  if (!other.length) return null;
-  for (const f of other) await rm(join(dir, f), { force: true });
-  return `The project had lockfiles for more than one package manager. Switchyard kept ${pm}'s, the one it detected, and removed ${other.join(", ")}, because the Cloudflare build tools could otherwise pick another package manager.`;
+  const removed: string[] = [];
+  for (const folder of new Set([projectDir, repoDir])) {
+    for (const f of candidates) {
+      const path = join(folder, f);
+      if (!existsSync(path)) continue;
+      await rm(path, { force: true });
+      removed.push(relative(repoDir, path) || f);
+    }
+  }
+  if (!removed.length) return null;
+  return `The project had lockfiles for more than one package manager. Switchyard kept ${pm}'s, the one it detected, and removed ${removed.join(", ")}, because the Cloudflare build tools could otherwise pick another package manager.`;
 }
 
-// Keeps a Yarn 1 project on Yarn 1 everywhere by naming it in package.json. Returns a
-// warning when package.json changed.
+// Keeps a Yarn 1 project on Yarn 1 everywhere by naming it in package.json (at the lockfile's
+// folder, so monorepos pin at the workspace root). Returns a warning when package.json changed.
 async function pinYarn1(projectDir: string, repoDir: string): Promise<string | null> {
-  const path = join(projectDir, "package.json");
-  const text = await readFile(path, "utf8").catch(() => null);
-  if (text === null || parsePackageJson(text)?.packageManager) return null;
-  for (const folder of new Set([projectDir, repoDir])) {
+  const folders = [...new Set([projectDir, repoDir])];
+  for (const folder of folders) {
+    const text = await readFile(join(folder, "package.json"), "utf8").catch(() => null);
+    if (text !== null && parsePackageJson(text)?.packageManager) return null;
+  }
+  for (const folder of folders) {
     const lock = await readFile(join(folder, "yarn.lock"), "utf8").catch(() => null);
     if (lock === null) continue;
     if (!isYarn1Lockfile(lock)) return null;
+    const path = join(folder, "package.json");
+    const text = await readFile(path, "utf8").catch(() => null);
+    if (text === null) continue;
     const manifest = JSON.parse(text) as Record<string, unknown>;
     await writeFile(path, `${JSON.stringify({ ...manifest, packageManager: `yarn@${YARN_1_VERSION}` }, null, 2)}\n`);
-    return `Switchyard set packageManager to yarn@${YARN_1_VERSION} in package.json. The project has a Yarn 1 lockfile, which Vercel installs with Yarn 1, while Workers Builds would otherwise use Yarn 4 and switch the project to Plug'n'Play.`;
+    const file = relative(repoDir, path) || "package.json";
+    return `Switchyard set packageManager to yarn@${YARN_1_VERSION} in ${file}. The project has a Yarn 1 lockfile, which Vercel installs with Yarn 1, while Workers Builds would otherwise use Yarn 4 and switch the project to Plug'n'Play.`;
   }
   return null;
 }
@@ -268,7 +283,7 @@ export const convertStep: Step = {
     const dir = projectDirFor(repoDir, repo.rootDirectory);
     const switchWarnings = plan.switchedFrom ? await switchToPnpm(ctx, dir, plan.switchedFrom) : [];
     const yarnWarning = plan.packageManager === "yarn" ? await pinYarn1(dir, repoDir) : null;
-    const lockWarning = await removeOtherLockfiles(dir, plan.packageManager);
+    const lockWarning = await removeOtherLockfiles(dir, repoDir, plan.packageManager);
     await ctx.deps.ensurePackageManager(plan.packageManager, dir, ctx.log);
     const result = await adapter.convert({
       dir,
@@ -420,12 +435,22 @@ async function versionBeforeMigration(ctx: StepContext, name: string): Promise<s
   return null;
 }
 
+// Checks whether a package is installed in dir's node_modules or hoisted up to repoDir.
+function isInstalledInTree(dir: string, repoDir: string, packageName: string): boolean {
+  for (let folder = dir; ; folder = dirname(folder)) {
+    if (existsSync(join(folder, "node_modules", packageName, "package.json"))) return true;
+    if (folder === repoDir || dirname(folder) === folder) return false;
+  }
+}
+
 // Adds packages that installed dependencies import without declaring them. Returns a
 // warning for each, or nothing when the failure has another cause.
 async function repairUndeclaredImports(ctx: StepContext, dir: string, output: string): Promise<string[]> {
+  const repoDir = ctx.output("clone").dir || dir;
   const missing = findUndeclaredImports(output).filter(
-    // An installed package means the import failed for another reason, such as a missing export.
-    (m) => !existsSync(join(dir, "node_modules", m.packageName, "package.json")),
+    // An installed package (including one hoisted to the monorepo root) means the import
+    // failed for another reason, such as a missing export.
+    (m) => !isInstalledInTree(dir, repoDir, m.packageName),
   );
   if (!missing.length) return [];
   const additions = await Promise.all(

@@ -3,7 +3,7 @@ import type { NextCachePreset, ProjectSettings, Support } from "../adapters/type
 import { readOnlyAccountMessage, type CloudflareClient, type CloudflareZone } from "../clients/cloudflare.ts";
 import type { GitHubClient } from "../clients/github.ts";
 import type { VercelClient, VercelDomain } from "../clients/vercel.ts";
-import { MIGRATION_BRANCH } from "../config.ts";
+import { MIGRATION_BRANCH, migrationBranchFor } from "../config.ts";
 import { ApiError } from "../http.ts";
 import { buildEnvPlan, type EnvPlan, type EnvValues } from "../translate/env-plan.ts";
 import { detectVercelFeatures, type FeatureFinding } from "../translate/features.ts";
@@ -120,6 +120,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   }
   let repo: MigrationPlan["repo"] = null;
   let pkg: PackageJson | null = null;
+  let rootPkg: PackageJson | null = null;
   let files: string[] = [];
   let vercelJsonRaw: string | null = null;
   let rootListing: string[] = [];
@@ -127,6 +128,8 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   // Files in the project's own folder, which the adapter's planFiles are looked up in.
   let projectFiles: string[] = [];
 
+  const workerName = sanitizeWorkerName(project.name);
+  const branch = migrationBranchFor(workerName, rootDirectory);
   const link = project.link;
   if (!link?.org || !link.repo) {
     blockers.push("This project isn't linked to a Git repository on Vercel, so there is no code to convert.");
@@ -137,19 +140,21 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
       const info = await d.github.getRepo(link.org, link.repo);
       const productionBranch = link.productionBranch ?? info.defaultBranch;
       repo = { owner: info.ownerLogin, name: info.name, productionBranch, rootDirectory };
-      if (productionBranch === MIGRATION_BRANCH) {
+      if (productionBranch === branch || productionBranch === MIGRATION_BRANCH) {
         blockers.push(
-          `The production branch is called ${MIGRATION_BRANCH}, which Switchyard uses for its own changes. Rename the production branch first.`,
+          `The production branch is called ${productionBranch}, which Switchyard uses for its own changes. Rename the production branch first.`,
         );
       }
       const at = (file: string) => (rootDirectory ? `${rootDirectory}/${file}` : file);
-      const [pkgText, vercelJson, rootFiles, dirFiles] = await Promise.all([
+      const [pkgText, rootPkgText, vercelJson, rootFiles, dirFiles] = await Promise.all([
         d.github.getFile(info.ownerLogin, info.name, at("package.json"), productionBranch),
+        rootDirectory ? d.github.getFile(info.ownerLogin, info.name, "package.json", productionBranch) : null,
         d.github.getFile(info.ownerLogin, info.name, at("vercel.json"), productionBranch),
         d.github.listDir(info.ownerLogin, info.name, "", productionBranch),
         rootDirectory ? d.github.listDir(info.ownerLogin, info.name, rootDirectory, productionBranch) : null,
       ]);
       pkg = parsePackageJson(pkgText);
+      rootPkg = parsePackageJson(rootPkgText);
       pkgMissing = pkg ? null : `No readable package.json at ${rootDirectory || "the repository root"} on ${productionBranch}.`;
       vercelJsonRaw = vercelJson;
       files = [...(rootFiles ?? []), ...(dirFiles ?? [])];
@@ -163,10 +168,12 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
 
   // vercel.json's build settings win over the project's, as they do on Vercel.
   const overrides = vercelJsonBuildSettings(vercelJsonRaw);
+  const installCommand = overrides.installCommand ?? project.installCommand ?? null;
   const settings: ProjectSettings = {
     framework: overrides.framework !== undefined ? overrides.framework : project.framework,
     buildCommand: overrides.buildCommand ?? project.buildCommand ?? null,
     outputDirectory: overrides.outputDirectory ?? project.outputDirectory ?? null,
+    ...(installCommand !== null ? { installCommand } : {}),
   };
   const { adapter, support } = pickAdapter({ vercelFramework: settings.framework, packageJson: pkg });
   if (!adapter) blockers.push(support.reason ?? "This framework isn't supported yet.");
@@ -178,7 +185,6 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   const dependencies = allDependencies(pkg);
   const planProject = { settings, projectFiles };
 
-  const workerName = sanitizeWorkerName(project.name);
   const planFiles: Record<string, string> = vercelJsonRaw === null ? {} : { "vercel.json": vercelJsonRaw };
   if (repo && adapter?.planFiles) {
     const { owner, name, productionBranch } = repo;
@@ -189,6 +195,11 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
   }
   if (adapter && repo) blockers.push(...(adapter.planBlockers?.(pkg, planProject) ?? []));
   const warnings: string[] = [...(adapter?.planWarnings?.(pkg, planFiles, planProject) ?? [])];
+  if (installCommand?.trim()) {
+    warnings.push(
+      `This project sets a custom Install Command (\`${installCommand.trim()}\`) on Vercel. Workers Builds installs dependencies automatically from the lockfile, so check whether any extra install steps need to move into the build command.`,
+    );
+  }
   const vercelJson = translateVercelJson(vercelJsonRaw, {
     nextjs: adapter?.id === "nextjs" || !adapter,
     buildSettings: adapter?.followsBuildSettings === true,
@@ -208,7 +219,7 @@ export async function buildPlan(d: PlanDeps, projectId: string): Promise<{ plan:
     );
   }
 
-  const packageManager = detectPackageManager(files, pkg);
+  const packageManager = detectPackageManager(files, pkg, rootPkg);
   return {
     plan: {
       projectId: project.id,

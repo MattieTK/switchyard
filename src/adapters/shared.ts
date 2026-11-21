@@ -100,7 +100,7 @@ export async function writeCloudflareBuildScript(
     const c = runScriptCommand(ctx.pm, name);
     return [c.cmd, ...c.args].join(" ");
   };
-  const result = cloudflareBuildScript(manifest.scripts, run, framework);
+  const result = cloudflareBuildScript(manifest.scripts, run, framework, ctx.settings?.buildCommand);
   warnings.push(...result.warnings);
   if (!result.script) return null;
   manifest.scripts = { ...manifest.scripts, [CLOUDFLARE_BUILD_SCRIPT]: result.script };

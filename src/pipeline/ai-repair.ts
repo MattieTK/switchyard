@@ -9,6 +9,7 @@ import {
   type OpenAIClient,
   type ResponseItem,
 } from "../clients/openai.ts";
+import { migrationBranchFor } from "../config.ts";
 import type { RunResult } from "../exec.ts";
 import { addCommand, installEnv } from "../translate/package-manager.ts";
 import { STEP_INFO } from "./step-info.ts";
@@ -147,14 +148,15 @@ export function migrationContext(ctx: StepContext, repoDir: string): string {
     return `${i + 1}. ${STEP_INFO[s.id].title}. ${STEP_INFO[s.id].does}${outputs.length ? ` (${outputs.join("; ")})` : ""}`;
   };
   const repo = plan.repo;
+  const branch = migrationBranchFor(plan.workerName, repo?.rootDirectory);
   const pushed = steps.find((s) => s.id === "push")?.status === "done";
   const prUrl = steps.find((s) => s.id === "pr")?.outputs.prUrl;
   const destination = pushed
-    ? `The branch is already on GitHub${prUrl ? ` and the pull request is open at ${prUrl}` : ""}. Once your fix passes, Switchyard commits your changes as a new commit on cloudflare-migration, pushes it${prUrl ? ", comments on the pull request" : ""} and runs this step again.`
-    : `Your changes stay in this working copy until the push step commits them to cloudflare-migration with the rest of the conversion, and the pull request lists them for review.${repo ? ` Nothing reaches ${repo.productionBranch} until someone merges that pull request.` : ""}`;
+    ? `The branch is already on GitHub${prUrl ? ` and the pull request is open at ${prUrl}` : ""}. Once your fix passes, Switchyard commits your changes as a new commit on ${branch}, pushes it${prUrl ? ", comments on the pull request" : ""} and runs this step again.`
+    : `Your changes stay in this working copy until the push step commits them to ${branch} with the rest of the conversion, and the pull request lists them for review.${repo ? ` Nothing reaches ${repo.productionBranch} until someone merges that pull request.` : ""}`;
   return [
     "Where the migration is:",
-    `Switchyard is moving the Vercel project ${plan.projectName}${repo ? ` (github.com/${repo.owner}/${repo.name}, production branch ${repo.productionBranch})` : ""} to the Cloudflare Worker ${plan.workerName}. The working copy is ${repoDir}, on the cloudflare-migration branch.`,
+    `Switchyard is moving the Vercel project ${plan.projectName}${repo ? ` (github.com/${repo.owner}/${repo.name}, production branch ${repo.productionBranch})` : ""} to the Cloudflare Worker ${plan.workerName}. The working copy is ${repoDir}, on the ${branch} branch.`,
     "",
     "Steps done:",
     ...(at > 0 ? steps.slice(0, at).map((_, i) => line(i)) : ["None."]),

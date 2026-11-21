@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { CommandRunner } from "./exec.ts";
 import { parsePackageJson } from "./translate/package-json.ts";
 import type { PackageManager } from "./translate/package-manager.ts";
@@ -21,10 +22,14 @@ async function versionOf(run: CommandRunner, pm: PackageManager, cwd: string): P
 }
 
 // The version package.json's packageManager field asks for: "1.22.22" from "yarn@1.22.22+sha512.…".
+// Walks up to the repository root so monorepo projects inherit the root package.json's pin.
 async function declaredVersion(pm: PackageManager, cwd: string): Promise<string | null> {
-  const text = await readFile(join(cwd, "package.json"), "utf8").catch(() => null);
-  const [name, version] = parsePackageJson(text)?.packageManager?.split("@") ?? [];
-  return name === pm && version ? (version.split("+")[0] ?? null) : null;
+  for (let folder = cwd; ; folder = dirname(folder)) {
+    const text = await readFile(join(folder, "package.json"), "utf8").catch(() => null);
+    const [name, version] = parsePackageJson(text)?.packageManager?.split("@") ?? [];
+    if (name === pm && version) return version.split("+")[0] ?? null;
+    if (existsSync(join(folder, ".git")) || dirname(folder) === folder) return null;
+  }
 }
 
 // Makes sure the project's package manager can run. A missing yarn or pnpm is set up

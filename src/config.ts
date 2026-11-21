@@ -15,7 +15,14 @@ export const CF_VERSION = "1.0.0-rc.1";
 export const NEXT_UPGRADE_VERSION = "16.4.1";
 
 // Branch Switchyard pushes conversion changes to. It must never be a production branch.
+// Monorepo projects with a rootDirectory get a worker-scoped branch so migrating multiple
+// Workers from the same repository doesn't overwrite earlier migration branches or PRs.
 export const MIGRATION_BRANCH = "cloudflare-migration";
+
+export function migrationBranchFor(workerName: string, rootDirectory?: string | null): string {
+  const dir = (rootDirectory ?? "").replace(/^\/+|\/+$/g, "");
+  return dir ? `${MIGRATION_BRANCH}/${workerName}` : MIGRATION_BRANCH;
+}
 
 // Workers Builds trigger names. Switchyard finds its own triggers by these names.
 export const PRODUCTION_TRIGGER = "switchyard-production";

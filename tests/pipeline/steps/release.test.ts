@@ -239,6 +239,24 @@ describe("pushStep", () => {
     expect(calls.find((c) => c.args.includes("commit"))?.args).toContain("user.email=switchyard@localhost");
   });
 
+  it("pushes to a worker-scoped migration branch when rootDirectory is set", async () => {
+    const { run, calls } = fakeRunner((_cmd, args) => ({
+      code: 0,
+      output: args[0] === "status" ? " M apps/web/package.json\n" : "",
+    }));
+    const { ctx } = makeContext({
+      plan: {
+        workerName: "web",
+        repo: { owner: "acme", name: "mono", productionBranch: "main", rootDirectory: "apps/web" },
+      },
+      deps: { run },
+      outputs: { clone: { dir: "/w" } },
+    });
+    await pushStep.run(ctx);
+    expect(calls[4]?.args).toEqual(["push", "--force", "origin", "HEAD:refs/heads/cloudflare-migration/web"]);
+    expect(ctx.outputs.branch).toBe("cloudflare-migration/web");
+  });
+
   it("doesn't create an empty commit on a retry", async () => {
     const { run, calls } = fakeRunner(() => ({ code: 0, output: "" }));
     const { ctx } = makeContext({ deps: { run }, outputs: { clone: { dir: "/w" } } });

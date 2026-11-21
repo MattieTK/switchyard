@@ -55,7 +55,7 @@ export interface VercelJsonOptions {
 }
 
 // Settings vercel.json can set, which Vercel uses over the project's own.
-const BUILD_SETTINGS = ["framework", "buildCommand", "outputDirectory"] as const;
+const BUILD_SETTINGS = ["framework", "buildCommand", "installCommand", "outputDirectory"] as const;
 
 // The build settings vercel.json overrides, leaving out any that aren't strings. A null
 // framework in vercel.json means Other, so it's kept.

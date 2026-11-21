@@ -11,7 +11,7 @@ import { allDependencies, type PackageJson } from "../translate/package-json.ts"
 import { addCommand, dlxCommand, installCommand, installEnv, type PackageManager } from "../translate/package-manager.ts";
 import { planFlaggedUpdates, type Release } from "./flagged-packages.ts";
 import { type IncompatibleDependency, incompatibleDependencies, incompatibleDependencyWarning } from "./next-codemod-output.ts";
-import { detectedFrameworks, readPackageJson, runInstall, writeCloudflareBuildScript } from "./shared.ts";
+import { detectedFrameworks, findUp, readPackageJson, runInstall, writeCloudflareBuildScript } from "./shared.ts";
 import type { Adapter, AdapterOptions, ConvertContext, NextCachePreset } from "./types.ts";
 
 // vinext refuses to prompt when it detects an agent environment, so every
@@ -28,8 +28,9 @@ const LEGACY_PEER_DEPS_WARNING =
 
 // vinext init installs a vinext release whose React peer range can be newer than
 // the project's pin, which npm rejects with ERESOLVE. Returns true when the line was added.
+// Uses an existing workspace-root .npmrc when present so monorepo installs see it too.
 async function ensureLegacyPeerDeps(dir: string): Promise<boolean> {
-  const path = join(dir, ".npmrc");
+  const path = findUp(dir, ".npmrc") ?? join(dir, ".npmrc");
   let existing: string | null = null;
   try {
     existing = await readFile(path, "utf8");

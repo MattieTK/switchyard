@@ -24,6 +24,13 @@ describe("config", () => {
   it("never uses a common production branch name for the migration branch", () => {
     expect(["main", "master", "production"]).not.toContain(config.MIGRATION_BRANCH);
   });
+
+  it("scopes the migration branch per Worker in monorepos so multiple Workers don't collide", () => {
+    expect(config.migrationBranchFor("shop", "")).toBe("cloudflare-migration");
+    expect(config.migrationBranchFor("shop", null)).toBe("cloudflare-migration");
+    expect(config.migrationBranchFor("web", "apps/web")).toBe("cloudflare-migration/web");
+    expect(config.migrationBranchFor("docs", "/apps/docs/")).toBe("cloudflare-migration/docs");
+  });
 });
 
 describe("development overrides", () => {

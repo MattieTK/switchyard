@@ -130,6 +130,43 @@ describe("convertStep", () => {
     await expect(stat(join(repoDir, "switchyard-entry.ts"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("writes _redirects, _headers, htmlHandling, and proxy Worker entrypoint from vercel.json", async () => {
+    const repoDir = await makeTempDir();
+    const adapter = {
+      convert: async (c: { dir: string }) => {
+        await writeFile(
+          join(c.dir, "cloudflare.config.ts"),
+          `import { defineConfig } from "cf/config";\nexport default defineConfig({ worker: { name: "app", assets: { notFoundHandling: "single-page-application" } } });\n`,
+        );
+        return { warnings: [] };
+      },
+    } as unknown as Adapter;
+    const { ctx } = makeContext({
+      plan: {
+        adapterId: "vite",
+        vercelJson: {
+          crons: [],
+          manual: [],
+          htmlHandling: "drop-trailing-slash",
+          redirects: [{ source: "/old", destination: "/new", status: 301 }],
+          headers: [{ source: "/*", headers: [{ key: "X-Frame-Options", value: "DENY" }] }],
+          proxyRewrites: [{ prefix: "/api", target: "https://api.example.com", wildcard: true }],
+        },
+      },
+      deps: { run: fakeRunner().run, adapter: () => adapter },
+      outputs: { clone: { dir: repoDir } },
+    });
+    await convertStep.run(ctx);
+    expect(await readFile(join(repoDir, "public", "_redirects"), "utf8")).toContain("/old /new 301");
+    expect(await readFile(join(repoDir, "public", "_headers"), "utf8")).toContain("X-Frame-Options: DENY");
+    expect(await readFile(join(repoDir, "switchyard-proxy-entry.ts"), "utf8")).toContain("https://api.example.com");
+    const config = await readFile(join(repoDir, "cloudflare.config.ts"), "utf8");
+    expect(config).toContain('htmlHandling: "drop-trailing-slash"');
+    expect(config).toContain('runWorkerFirst: ["/api/*"]');
+    expect(config).toContain('entrypoint: "./switchyard-proxy-entry.ts"');
+    expect(config).toContain("ASSETS: bindings.assets()");
+  });
+
   it("passes the chosen upgrade options to the adapter, and defaults for older job files", async () => {
     const seen: unknown[] = [];
     const adapter = {

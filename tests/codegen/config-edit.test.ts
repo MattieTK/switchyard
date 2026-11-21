@@ -84,4 +84,29 @@ export default defineConfig({
     const again = editCloudflareConfig(VINEXT_CONFIG, { workerName: "x", secretKeys: [], crons: [], compatibilityFlags: ["nodejs_compat"] });
     expect(again.match(/nodejs_compat/g)).toHaveLength(1);
   });
+
+  it("sets assets htmlHandling, runWorkerFirst and ASSETS binding for translated vercel.json routing", () => {
+    const src = `import { defineConfig } from "cf/config";
+export default defineConfig({
+  worker: {
+    name: "app",
+    assets: { notFoundHandling: "single-page-application" },
+  },
+});
+`;
+    const out = editCloudflareConfig(src, {
+      workerName: "app",
+      secretKeys: [],
+      crons: [],
+      entrypoint: "./switchyard-proxy-entry.ts",
+      htmlHandling: "drop-trailing-slash",
+      runWorkerFirst: ["/api/*"],
+      assetsBinding: true,
+    });
+    expect(out).toContain('htmlHandling: "drop-trailing-slash"');
+    expect(out).toContain('runWorkerFirst: ["/api/*"]');
+    expect(out).toContain("ASSETS: bindings.assets()");
+    expect(out).toContain('entrypoint: "./switchyard-proxy-entry.ts"');
+    expect(() => parseModule(out)).not.toThrow();
+  });
 });

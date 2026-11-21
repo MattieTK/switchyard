@@ -1,5 +1,5 @@
 import { builders, generateCode, parseModule, type ProxifiedModule } from "magicast";
-import type { CronJob } from "../translate/vercel-json.ts";
+import type { CronJob, HtmlHandling } from "../translate/vercel-json.ts";
 
 export interface ConfigEdits {
   workerName: string;
@@ -8,6 +8,12 @@ export interface ConfigEdits {
   entrypoint?: string;
   // Compatibility flags the Worker needs, added to any it already has.
   compatibilityFlags?: readonly string[];
+  // Assets HTML handling translated from vercel.json (trailingSlash / cleanUrls).
+  htmlHandling?: HtmlHandling;
+  // Paths that should hit the Worker before static assets (used for external proxy rewrites).
+  runWorkerFirst?: readonly string[];
+  // Ensures an ASSETS binding exists on worker.env (needed when adding a proxy entrypoint).
+  assetsBinding?: boolean;
 }
 
 export class ConfigEditError extends Error {
@@ -40,6 +46,18 @@ export function editCloudflareConfig(source: string, edits: ConfigEdits): string
     for (const flag of edits.compatibilityFlags) {
       if (![...worker.compatibilityFlags].includes(flag)) worker.compatibilityFlags.push(flag);
     }
+  }
+
+  if (edits.htmlHandling || edits.runWorkerFirst?.length) {
+    if (!worker.assets) worker.assets = {};
+    if (edits.htmlHandling) worker.assets.htmlHandling = edits.htmlHandling;
+    if (edits.runWorkerFirst?.length) worker.assets.runWorkerFirst = [...edits.runWorkerFirst];
+  }
+
+  if (edits.assetsBinding) {
+    if (!worker.env) worker.env = {};
+    if (!("ASSETS" in worker.env)) worker.env.ASSETS = builders.raw("bindings.assets()");
+    ensureImport(mod, "bindings");
   }
 
   if (edits.secretKeys.length) {

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,11 +37,13 @@ async function convertAndBuild(app: string, adapter: Adapter, settings: ProjectS
     ? await run("npm", ["run", result.buildScript], { cwd: dir, env: { CI: "1" } })
     : await run("npx", ["--no-install", "cf", "build"], { cwd: dir, env: { CI: "1" } });
   expect(build.code, `${lines.join("\n")}\n${build.output}`).toBe(0);
-  const worker = JSON.parse(await readFile(join(dir, ".cloudflare/output/v0/workers/default/worker.config.json"), "utf8")) as {
+  const outputRoot = join(dir, ".cloudflare/output");
+  const version = existsSync(join(outputRoot, "v1")) ? "v1" : "v0";
+  const worker = JSON.parse(await readFile(join(outputRoot, version, "workers/default/worker.config.json"), "utf8")) as {
     name: string;
     assets?: { notFoundHandling?: string };
   };
-  const assets = join(dir, ".cloudflare/output/v0/workers/default/assets");
+  const assets = join(outputRoot, version, "workers/default/assets");
   return { result, worker, assets, build };
 }
 

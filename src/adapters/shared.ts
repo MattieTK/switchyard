@@ -112,7 +112,7 @@ export async function writeCloudflareBuildScript(
 }
 
 // Dependencies that make cf detect a framework and run that framework's build, whatever
-// cloudflare.config.ts says. Checked against cf 1.0.0-beta.25, which reads them from package.json.
+// cloudflare.config.ts says. Checked against cf 1.0.0-rc.1, which reads them from package.json.
 export const CF_DETECTED_FRAMEWORKS: Readonly<Record<string, string>> = {
   next: "Next.js",
   vite: "Vite",

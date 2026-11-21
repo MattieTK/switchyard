@@ -1,12 +1,20 @@
-import { reactRouterAdapter, viteAdapter } from "./cf-init.ts";
+import { astroAdapter, reactRouterAdapter, solidStartAdapter, tanstackStartAdapter, viteAdapter } from "./cf-init.ts";
 import { nextjsAdapter } from "./nextjs.ts";
 import { detectedFrameworks } from "./shared.ts";
 import { STATIC_PRESETS, staticAdapter } from "./static.ts";
 import type { Adapter, DetectInput, Support } from "./types.ts";
 
-// Most specific first: React Router and Next.js apps also depend on Vite, and the static adapter
-// takes what's left.
-export const ADAPTERS: readonly Adapter[] = [nextjsAdapter, reactRouterAdapter, viteAdapter, staticAdapter];
+// Most specific first: server frameworks also depend on Vite, Vite < 6 falls through to static,
+// and the static adapter takes what's left.
+export const ADAPTERS: readonly Adapter[] = [
+  nextjsAdapter,
+  reactRouterAdapter,
+  astroAdapter,
+  tanstackStartAdapter,
+  solidStartAdapter,
+  viteAdapter,
+  staticAdapter,
+];
 
 // Vercel's framework slugs, as people know the frameworks.
 const FRAMEWORK_NAMES: Readonly<Record<string, string>> = {
@@ -47,16 +55,13 @@ export function frameworkName(slug: string | null): string | null {
 
 // Why a framework can't move yet, where there's more to say than that it isn't supported.
 const NOT_YET: Readonly<Record<string, string>> = {
-  remix: "Remix 2 apps need upgrading to React Router 7 first. Once the app uses React Router 7, Switchyard can move it.",
-  astro: "The Cloudflare build tool (cf) can't build Astro projects yet.",
+  remix: "Remix 2 apps need upgrading to React Router 7+ first. Once the app uses React Router, Switchyard can move it.",
   sveltekit: "The Cloudflare build tool (cf) doesn't support SvelteKit yet.",
   "sveltekit-1": "The Cloudflare build tool (cf) doesn't support SvelteKit yet.",
   nuxtjs: "The Cloudflare build tool (cf) doesn't support Nuxt yet.",
   angular: "The Cloudflare build tool (cf) doesn't support Angular yet.",
   "ionic-angular": "The Cloudflare build tool (cf) doesn't support Angular yet.",
   scully: "The Cloudflare build tool (cf) doesn't support Angular yet.",
-  solidstart: "The Cloudflare build tool (cf) doesn't support SolidStart yet.",
-  "solidstart-1": "The Cloudflare build tool (cf) doesn't support SolidStart yet.",
   qwik: "The Cloudflare build tool (cf) doesn't support Qwik yet.",
   hugo: "Switchyard only builds JavaScript projects so far, and Hugo sites build with Hugo itself.",
   jekyll: "Switchyard only builds JavaScript projects so far, and Jekyll sites build with Ruby.",
@@ -74,13 +79,6 @@ function unsupported(input: DetectInput): Support {
   if (known) return { level: "unsupported", reason: known };
   // A framework found in package.json, that cf would build itself.
   const found = detectedFrameworks(input.packageJson).map(([, name]) => name);
-  const preset = framework ? STATIC_PRESETS[framework] : undefined;
-  if (preset && found.length) {
-    return {
-      level: "unsupported",
-      reason: `This ${preset.name} project depends on ${found.join(" and ")}, so the Cloudflare build tool (cf) would build it as a ${found.join(" and ")} app instead. Switchyard can't move it yet.`,
-    };
-  }
   if (found.length) {
     return {
       level: "unsupported",

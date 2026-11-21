@@ -217,7 +217,7 @@ describe("buildPlan", () => {
     expect(plan.warnings).toEqual([expect.stringContaining("serve site/ as static assets")]);
   });
 
-  it("plans a site without a package.json, and blocks one served from its repository folder", async () => {
+  it("plans a site without a package.json, including one served from its repository folder", async () => {
     const plain = (listing: string[]) =>
       buildPlan(
         deps({
@@ -229,7 +229,8 @@ describe("buildPlan", () => {
     const withPublic = await plain(["public", "README.md"]);
     expect(withPublic.plan).toMatchObject({ adapterId: "static", blockers: [], support: { level: "partial" } });
     const atRoot = await plain(["index.html", "style.css"]);
-    expect(atRoot.plan.blockers).toEqual([expect.stringContaining("Move the site's files into a public/ folder")]);
+    expect(atRoot.plan).toMatchObject({ adapterId: "static", blockers: [], support: { level: "partial" } });
+    expect(atRoot.plan.warnings).toContainEqual(expect.stringContaining("switchyard-stage.mjs"));
   });
 
   it("blocks when the production branch is the migration branch", async () => {
